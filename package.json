@@ -1,0 +1,13 @@
+{
+  "name": "vozlivre",
+  "private": true,
+  "author": "Axel Foley",
+  "license": "BSD-3-Clause",
+  "scripts": {
+    "dev": "pnpm --parallel --filter api --filter web dev",
+    "build": "pnpm --filter api build && pnpm --filter web build",
+    "test": "pnpm --filter api test --runInBand",
+    "infra:up": "docker compose up -d postgres redis livekit",
+    "infra:down": "docker compose down"
+  }
+}
