@@ -19,9 +19,9 @@ export class AuthGuard implements CanActivate {
 
   async canActivate(context: ExecutionContext) {
     const request = context.switchToHttp().getRequest<AuthenticatedRequest>();
-    const session = await this.auth.sessionFromToken(
-      request.cookies?.vozlivre_session,
-    );
+    const cookies = request.cookies as
+      Record<string, string | undefined> | undefined;
+    const session = await this.auth.sessionFromToken(cookies?.vozlivre_session);
     if (!session) throw new UnauthorizedException('Faça login para continuar.');
     request.user = session.user;
     request.sessionId = session.sessionId;

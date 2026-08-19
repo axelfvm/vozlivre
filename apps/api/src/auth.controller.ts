@@ -14,6 +14,8 @@ import {
   MaxLength,
   MinLength,
 } from 'class-validator';
+import { Throttle } from '@nestjs/throttler';
+import { ConfigService } from '@nestjs/config';
 import type { Response } from 'express';
 import { AuthGuard, type AuthenticatedRequest } from './auth.guard';
 import { AuthService } from './auth.service';
@@ -36,18 +38,24 @@ class RegisterDto {
 
 class LoginDto {
   @IsEmail()
+  @MaxLength(254)
   email!: string;
 
   @IsString()
   @IsNotEmpty()
+  @MaxLength(72)
   password!: string;
 }
 
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly auth: AuthService) {}
+  constructor(
+    private readonly auth: AuthService,
+    private readonly config: ConfigService,
+  ) {}
 
   @Post('register')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   async register(
     @Body() input: RegisterDto,
     @Res({ passthrough: true }) response: Response,
@@ -58,6 +66,7 @@ export class AuthController {
   }
 
   @Post('login')
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   async login(
     @Body() input: LoginDto,
     @Res({ passthrough: true }) response: Response,
@@ -85,10 +94,11 @@ export class AuthController {
   }
 
   private setSession(response: Response, token: string) {
+    const production = this.config.get<string>('NODE_ENV') === 'production';
     response.cookie('vozlivre_session', token, {
       httpOnly: true,
       sameSite: 'lax',
-      secure: process.env.NODE_ENV === 'production',
+      secure: production,
       path: '/',
       maxAge: 7 * 24 * 60 * 60 * 1000,
     });

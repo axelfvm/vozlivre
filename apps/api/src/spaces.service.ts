@@ -17,7 +17,19 @@ export class SpacesService {
       id: membership.space.id,
       name: membership.space.name,
       role: membership.role,
-      channels: membership.space.channels,
+      channels: membership.space.channels
+        .filter((channel) =>
+          this.membershipCanAccessChannel(membership.role, userId, channel),
+        )
+        .map((channel) => ({
+          id: channel.id,
+          spaceId: channel.spaceId,
+          name: channel.name,
+          kind: channel.kind,
+          position: channel.position,
+          isRestricted: channel.isRestricted,
+          createdAt: channel.createdAt,
+        })),
     }));
   }
 
@@ -92,6 +104,84 @@ export class SpacesService {
     });
   }
 
+  async channelAccess(userId: string, spaceId: string, channelId: string) {
+    await this.requireManager(userId, spaceId);
+    const channel = await this.prisma.channel.findFirst({
+      where: { id: channelId, spaceId },
+      select: {
+        id: true,
+        isRestricted: true,
+        memberAccess: { select: { userId: true } },
+        roleAccess: { select: { role: true } },
+      },
+    });
+    if (!channel) throw new NotFoundException('Canal não encontrado.');
+    const members = await this.prisma.membership.findMany({
+      where: { spaceId },
+      orderBy: { user: { displayName: 'asc' } },
+      select: {
+        role: true,
+        user: { select: { id: true, displayName: true, email: true } },
+      },
+    });
+    return {
+      restricted: channel.isRestricted,
+      memberIds: channel.memberAccess.map((access) => access.userId),
+      roles: channel.roleAccess.map((access) => access.role),
+      members: members.map((membership) => ({
+        ...membership.user,
+        role: membership.role,
+      })),
+      availableRoles: [
+        { id: 'owner', name: 'Proprietário' },
+        { id: 'admin', name: 'Administrador' },
+        { id: 'member', name: 'Membro' },
+      ],
+    };
+  }
+
+  async updateChannelAccess(
+    userId: string,
+    spaceId: string,
+    channelId: string,
+    input: { restricted: boolean; memberIds: string[]; roles: string[] },
+  ) {
+    await this.requireManager(userId, spaceId);
+    const channel = await this.prisma.channel.findFirst({
+      where: { id: channelId, spaceId },
+      select: { id: true },
+    });
+    if (!channel) throw new NotFoundException('Canal não encontrado.');
+
+    const memberIds = [...new Set(input.memberIds)];
+    const roles = [...new Set(input.roles)].filter((role) =>
+      ['owner', 'admin', 'member'].includes(role),
+    );
+    const validMembers = await this.prisma.membership.findMany({
+      where: { spaceId, userId: { in: memberIds } },
+      select: { userId: true },
+    });
+    if (validMembers.length !== memberIds.length) {
+      throw new ConflictException('Um dos membros não pertence à comunidade.');
+    }
+
+    await this.prisma.$transaction([
+      this.prisma.channel.update({
+        where: { id: channelId },
+        data: { isRestricted: input.restricted },
+      }),
+      this.prisma.channelMemberAccess.deleteMany({ where: { channelId } }),
+      this.prisma.channelRoleAccess.deleteMany({ where: { channelId } }),
+      this.prisma.channelMemberAccess.createMany({
+        data: memberIds.map((memberId) => ({ channelId, userId: memberId })),
+      }),
+      this.prisma.channelRoleAccess.createMany({
+        data: roles.map((role) => ({ channelId, role })),
+      }),
+    ]);
+    return { restricted: input.restricted, memberIds, roles };
+  }
+
   async joinByInvite(userId: string, code: string) {
     const invite = await this.prisma.spaceInvite.findUnique({
       where: { code: code.trim() },
@@ -125,22 +215,37 @@ export class SpacesService {
         ...(kind ? { kind } : {}),
         space: { memberships: { some: { userId } } },
       },
+      include: {
+        memberAccess: { where: { userId }, select: { userId: true } },
+        roleAccess: { select: { role: true } },
+        space: {
+          select: {
+            memberships: {
+              where: { userId },
+              select: { role: true },
+            },
+          },
+        },
+      },
     });
-    if (!channel)
+    const membership = channel?.space.memberships[0];
+    if (
+      !channel ||
+      !membership ||
+      !this.membershipCanAccessChannel(membership.role, userId, channel)
+    )
       throw new ForbiddenException('Você não tem acesso a este canal.');
     return channel;
   }
 
   async canAccessChannel(userId: string, channelId: string) {
-    return Boolean(
-      await this.prisma.channel.findFirst({
-        where: {
-          id: channelId,
-          space: { memberships: { some: { userId } } },
-        },
-        select: { id: true },
-      }),
-    );
+    try {
+      await this.accessibleChannel(userId, channelId);
+      return true;
+    } catch (error) {
+      if (error instanceof ForbiddenException) return false;
+      throw error;
+    }
   }
 
   async spaceIdsForUser(userId: string) {
@@ -151,13 +256,28 @@ export class SpacesService {
     return memberships.map((membership) => membership.spaceId);
   }
 
+  async channelIdsForUser(userId: string) {
+    const spaces = await this.listForUser(userId);
+    return spaces.flatMap((space) =>
+      space.channels.map((channel) => channel.id),
+    );
+  }
+
   private membershipsForUser(userId: string) {
     return this.prisma.membership.findMany({
       where: { userId },
       orderBy: { space: { createdAt: 'asc' } },
       include: {
         space: {
-          include: { channels: { orderBy: { position: 'asc' } } },
+          include: {
+            channels: {
+              orderBy: { position: 'asc' },
+              include: {
+                memberAccess: { where: { userId }, select: { userId: true } },
+                roleAccess: { select: { role: true } },
+              },
+            },
+          },
         },
       },
     });
@@ -171,6 +291,23 @@ export class SpacesService {
     if (!membership || !['owner', 'admin'].includes(membership.role)) {
       throw new ForbiddenException('Somente administradores podem fazer isso.');
     }
+  }
+
+  private membershipCanAccessChannel(
+    role: string,
+    userId: string,
+    channel: {
+      isRestricted: boolean;
+      memberAccess: { userId: string }[];
+      roleAccess: { role: string }[];
+    },
+  ) {
+    return (
+      !channel.isRestricted ||
+      ['owner', 'admin'].includes(role) ||
+      channel.memberAccess.some((access) => access.userId === userId) ||
+      channel.roleAccess.some((access) => access.role === role)
+    );
   }
 
   private normalizeChannelName(name: string, kind: ChannelKind) {

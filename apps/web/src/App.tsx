@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import { AudioLines, Bell, Check, ChevronDown, ChevronRight, Copy, Gift, Hash, HeadphoneOff, Headphones, HelpCircle, Inbox, KeyRound, LayoutGrid, Link2, Lock, LogOut, Mail, Mic, MonitorUp, Palette, PhoneOff, Plus, Radio, Search, Send, Settings, Shield, SlidersHorizontal, Smile, UserPlus, Users, Video, Volume2, X } from 'lucide-react'
+import { AudioLines, Bell, Check, ChevronDown, ChevronRight, Copy, FileImage, Gift, Hash, HeadphoneOff, Headphones, KeyRound, LayoutGrid, Link2, Lock, LogOut, Mail, Mic, MonitorUp, Palette, PhoneOff, Pin, Plus, Radio, Send, Settings, Shield, SlidersHorizontal, Smile, Sparkles, Sticker, UserPlus, Users, Video, Volume2, X } from 'lucide-react'
 import { LiveKitRoom, RoomAudioRenderer, TrackToggle, VideoConference, useRoomContext } from '@livekit/components-react'
 import '@livekit/components-styles'
 import { RoomEvent, ScreenSharePresets, Track } from 'livekit-client'
@@ -14,7 +14,11 @@ type Space = { id: string; name: string; role: string; channels: Channel[] }
 type AuthUser = { id: string; email: string; displayName: string; avatarUrl: string | null }
 type VoiceParticipant = { userId: string; displayName: string }
 type VoicePresenceUpdate = { channelId: string; participants: VoiceParticipant[] }
-const API_URL = 'http://localhost:3000'
+type ChannelAccessMember = { id: string; displayName: string; email: string; role: string }
+type ChannelAccessRole = { id: string; name: string }
+type ChannelAccess = { restricted: boolean; memberIds: string[]; roles: string[]; members: ChannelAccessMember[]; availableRoles: ChannelAccessRole[] }
+const API_URL = (import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:3000' : window.location.origin)).replace(/\/$/, '')
+const LIVEKIT_URL = import.meta.env.VITE_LIVEKIT_URL ?? (import.meta.env.DEV ? 'ws://localhost:7880' : '')
 const socket = io(API_URL, { autoConnect: false, withCredentials: true })
 const LOW_LATENCY_ROOM_OPTIONS: RoomOptions = {
   adaptiveStream: true,
@@ -82,6 +86,7 @@ function ChatApp({ user, onLogout }: { user: AuthUser; onLogout: (message?: stri
   const [activeSpaceId, setActiveSpaceId] = useState('')
   const [activeChannelId, setActiveChannelId] = useState('')
   const [messages, setMessages] = useState<Message[]>([])
+  const messagesRef = useRef<HTMLDivElement>(null)
   const [draft, setDraft] = useState('')
   const [mobileNav, setMobileNav] = useState(false)
   const [callToken, setCallToken] = useState<string | null>(null)
@@ -99,6 +104,11 @@ function ChatApp({ user, onLogout }: { user: AuthUser; onLogout: (message?: stri
   const [joinCode, setJoinCode] = useState('')
   const [formError, setFormError] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const [accessOpen, setAccessOpen] = useState(false)
+  const [channelAccess, setChannelAccess] = useState<ChannelAccess | null>(null)
+  const [accessMemberIds, setAccessMemberIds] = useState<string[]>([])
+  const [accessRoles, setAccessRoles] = useState<string[]>([])
+  const [accessRestricted, setAccessRestricted] = useState(false)
 
   const activeSpace = useMemo(() => spaces.find((space) => space.id === activeSpaceId) ?? spaces[0], [activeSpaceId, spaces])
   const channel = useMemo(() => activeSpace?.channels.find((item) => item.id === activeChannelId), [activeChannelId, activeSpace])
@@ -174,6 +184,7 @@ function ChatApp({ user, onLogout }: { user: AuthUser; onLogout: (message?: stri
   useEffect(() => { if (socket.connected) socket.emit('spaces:sync') }, [spaces])
 
   useEffect(() => { if (channel?.kind === 'TEXT') socket.emit('chat:join', { channelId: channel.id }) }, [channel])
+  useEffect(() => { const list = messagesRef.current; if (list) list.scrollTop = list.scrollHeight }, [activeChannelId, messages])
 
   const sendMessage = (event: FormEvent) => {
     event.preventDefault()
@@ -186,6 +197,7 @@ function ChatApp({ user, onLogout }: { user: AuthUser; onLogout: (message?: stri
   const joinCall = async (channelId: string) => {
     setCallError('')
     try {
+      if (!LIVEKIT_URL) throw new Error('O servidor de chamadas não foi configurado neste ambiente.')
       const response = await fetch(`${API_URL}/voice/token`, {
         method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ channelId }),
@@ -208,6 +220,28 @@ function ChatApp({ user, onLogout }: { user: AuthUser; onLogout: (message?: stri
 
   const openDialog = (next: 'community' | 'channel' | 'invite' | 'join') => {
     setWorkspaceMenu(false); setDialog(next); setFormError(''); setInviteUrl('')
+  }
+
+  const openChannelAccess = async () => {
+    if (!activeSpace || !channel) return
+    setAccessOpen(true); setFormError(''); setSubmitting(true); setChannelAccess(null)
+    try {
+      const response = await fetch(`${API_URL}/spaces/${activeSpace.id}/channels/${channel.id}/access`, { credentials: 'include' })
+      const payload = (await response.json()) as ChannelAccess & { message?: string }
+      if (!response.ok) throw new Error(payload.message ?? 'Não foi possível carregar os acessos do canal.')
+      setChannelAccess(payload); setAccessMemberIds(payload.memberIds); setAccessRoles(payload.roles); setAccessRestricted(payload.restricted)
+    } catch (error) { setFormError(error instanceof Error ? error.message : 'Não foi possível carregar os acessos do canal.') } finally { setSubmitting(false) }
+  }
+
+  const saveChannelAccess = async (event: FormEvent) => {
+    event.preventDefault(); if (!activeSpace || !channel) return
+    setSubmitting(true); setFormError('')
+    try {
+      const response = await fetch(`${API_URL}/spaces/${activeSpace.id}/channels/${channel.id}/access`, { method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ restricted: accessRestricted, memberIds: accessMemberIds, roles: accessRoles }) })
+      const payload = (await response.json()) as { message?: string }
+      if (!response.ok) throw new Error(payload.message ?? 'Não foi possível salvar os acessos do canal.')
+      await loadSpaces(activeSpace.id); socket.emit('spaces:sync'); setAccessOpen(false)
+    } catch (error) { setFormError(error instanceof Error ? error.message : 'Não foi possível salvar os acessos do canal.') } finally { setSubmitting(false) }
   }
 
   const createCommunity = async (event: FormEvent) => {
@@ -284,31 +318,32 @@ function ChatApp({ user, onLogout }: { user: AuthUser; onLogout: (message?: stri
       <section className="conversation">
         {!activeSpace ? <div className="community-empty"><div className="community-empty__mark">VL</div><span>COMECE SUA COMUNIDADE</span><h1>Seu VozLivre está vazio</h1><p>Comunidades não vêm vinculadas à conta. Crie uma nova ou entre somente com um convite recebido.</p><div><button onClick={() => openDialog('community')}><Plus size={18} /> Criar comunidade</button><button onClick={() => openDialog('join')}><Link2 size={18} /> Entrar com convite</button></div></div> : <>
         <header className="topbar">
-          <button className="mobile-menu" onClick={() => setMobileNav((value) => !value)} aria-label="Abrir canais"><span /><span /><span /></button>{showVoiceStage ? <Volume2 size={20} className="muted-icon" /> : <Hash size={20} className="muted-icon" />}
-          <div className="channel-title"><strong>{showVoiceStage ? voiceChannel?.name : channel?.name}</strong><span>{showVoiceStage ? 'Conectado à sala de voz.' : 'Canal privado para membros convidados.'}</span></div>
-          <div className="topbar-actions"><button aria-label="Notificações"><Bell size={19} /></button><button aria-label="Membros"><Users size={19} /></button><button aria-label="Caixa de entrada"><Inbox size={19} /></button><button aria-label="Ajuda"><HelpCircle size={19} /></button><label className="search"><Search size={16} /><input aria-label="Buscar" placeholder="Buscar" /></label></div>
+          <button className="mobile-menu" onClick={() => setMobileNav((value) => !value)} aria-label="Abrir canais"><span /><span /><span /></button>{showVoiceStage ? <Volume2 size={20} className="muted-icon" /> : <span className="channel-header-icon"><Hash size={21} /><Lock size={9} /></span>}
+          <div className="channel-title"><strong>{showVoiceStage ? voiceChannel?.name : channel?.name}</strong>{showVoiceStage && <span>Conectado à sala de voz.</span>}</div>
+          <div className="topbar-actions"><button aria-label="Notificações"><Bell size={18} /></button><button aria-label="Mensagens fixadas"><Pin size={18} /></button><button aria-label="Membros"><Users size={19} /></button></div>
         </header>
-        {showVoiceStage && callToken ? <div className="voice-stage"><VideoConference /><TrackToggle className="low-latency-share" source={Track.Source.ScreenShare} captureOptions={LOW_LATENCY_SCREEN_CAPTURE} publishOptions={LOW_LATENCY_SCREEN_PUBLISH}><MonitorUp size={16} /><span>Compartilhar tela</span></TrackToggle></div> : <><div className="messages" aria-live="polite">
-          <div className="channel-intro"><div><Hash size={34} /></div><h1>Boas-vindas a #{channel?.name}</h1><p>Somente membros deste espaço por convite podem acessar este canal.</p></div>
-          {messages.length === 0 && <div className="loading-line">Sincronizando mensagens…</div>}
-          {messages.map((message, index) => (
-            <article className="message" key={message.id}><Avatar name={message.author} index={index} /><div className="message__content">
-              <div className="message__meta"><strong>{message.author}</strong><time>{new Date(message.createdAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</time></div><p>{message.body}</p>
-            </div></article>
-          ))}
+        {showVoiceStage && callToken ? <div className="voice-stage"><VideoConference /><TrackToggle className="low-latency-share" source={Track.Source.ScreenShare} captureOptions={LOW_LATENCY_SCREEN_CAPTURE} publishOptions={LOW_LATENCY_SCREEN_PUBLISH}><MonitorUp size={16} /><span>Compartilhar tela</span></TrackToggle></div> : <><div className="messages" ref={messagesRef} aria-live="polite">
+          <div className="channel-intro"><div className="channel-intro__icon"><Hash size={40} /><Lock size={13} /></div><h1>Bem-vindo(a) a #{channel?.name}!</h1><p>Este é o começo do canal particular <strong>#{channel?.name}</strong>.</p>{['owner', 'admin'].includes(activeSpace.role) && <div className="channel-intro__actions"><button onClick={() => void openChannelAccess()}><UserPlus size={15} /> Adicionar membros ou cargos</button><button onClick={() => openDialog('channel')}><Plus size={15} /> Criar canal</button></div>}<span className="channel-role-badge"><span /> {activeSpace.role === 'owner' ? 'Proprietário' : activeSpace.role === 'admin' ? 'Administrador' : 'Membro'}</span></div>
+          {messages.map((message, index) => {
+            const previous = messages[index - 1]
+            const showDate = !previous || messageDay(previous.createdAt) !== messageDay(message.createdAt)
+            const compact = isCompactMessage(previous, message)
+            return <Fragment key={message.id}>{showDate && <div className="message-date"><span>{formatMessageDate(message.createdAt)}</span></div>}<article className={`message ${compact ? 'message--compact' : ''}`}>{compact ? <time className="message__hover-time">{formatMessageTime(message.createdAt)}</time> : <Avatar name={message.author} index={index} />}<div className="message__content">{!compact && <div className="message__meta"><strong>{message.author}</strong><time>{formatMessageTime(message.createdAt)}</time></div>}<p>{message.body}</p></div></article></Fragment>
+          })}
         </div>
-        <form className="composer" onSubmit={sendMessage}><button type="button" aria-label="Adicionar"><Plus size={20} /></button><input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={`Conversar em #${channel?.name ?? ''}`} aria-label="Mensagem" disabled={!channel} /><button type="button" aria-label="Presente"><Gift size={19} /></button><button type="button" aria-label="Emoji"><Smile size={19} /></button><button type="submit" aria-label="Enviar mensagem"><Send size={18} /></button></form></>}
+        <form className="composer" onSubmit={sendMessage}><button type="button" aria-label="Adicionar"><Plus size={22} /></button><input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={`Conversar em #${channel?.name ?? ''}`} aria-label="Mensagem" disabled={!channel} /><button type="button" aria-label="Presente"><Gift size={19} /></button><button type="button" aria-label="GIF"><FileImage size={19} /></button><button type="button" aria-label="Figurinha"><Sticker size={19} /></button><button type="button" aria-label="Emoji"><Smile size={19} /></button><button type="button" aria-label="Atividades"><Sparkles size={19} /></button><button className="composer__send" type="submit" aria-label="Enviar mensagem"><Send size={18} /></button></form></>}
         </>}
       </section>
 
       {callError && <div className="toast" role="alert">{callError}<button onClick={() => setCallError('')}><X size={16} /></button></div>}
       {settingsOpen && <SettingsPanel user={user} onClose={() => setSettingsOpen(false)} onLogout={async () => { try { await fetch(`${API_URL}/auth/logout`, { method: 'POST', credentials: 'include' }) } finally { socket.disconnect(); onLogout() } }} />}
+      {accessOpen && <ActionDialog title="Membros e cargos" onClose={() => setAccessOpen(false)}><form className="channel-access-form" onSubmit={saveChannelAccess}><p>Escolha quais membros ou cargos podem acessar <strong>#{channel?.name}</strong>. Proprietários e administradores sempre mantêm acesso.</p>{submitting && !channelAccess ? <div className="access-loading">Carregando acessos…</div> : channelAccess && <><button type="button" className={`access-restriction ${accessRestricted ? 'selected' : ''}`} aria-pressed={accessRestricted} onClick={() => setAccessRestricted((value) => !value)}><Lock size={17} /><span><strong>Canal restrito</strong><small>{accessRestricted ? 'Somente as seleções abaixo podem entrar.' : 'Todos os membros da comunidade podem entrar.'}</small></span><Check size={17} /></button><div className="access-section"><strong>CARGOS</strong>{channelAccess.availableRoles.map((role) => <button type="button" key={role.id} className={accessRoles.includes(role.id) ? 'selected' : ''} aria-pressed={accessRoles.includes(role.id)} onClick={() => setAccessRoles((current) => current.includes(role.id) ? current.filter((id) => id !== role.id) : [...current, role.id])}><span className={`role-dot role-dot--${role.id}`} />{role.name}<Check size={15} /></button>)}</div><div className="access-section"><strong>MEMBROS</strong>{channelAccess.members.map((member) => <button type="button" key={member.id} className={accessMemberIds.includes(member.id) ? 'selected' : ''} aria-pressed={accessMemberIds.includes(member.id)} onClick={() => setAccessMemberIds((current) => current.includes(member.id) ? current.filter((id) => id !== member.id) : [...current, member.id])}><span className="access-avatar">{member.displayName.slice(0, 1).toUpperCase()}</span><span>{member.displayName}<small>{member.email}</small></span><Check size={15} /></button>)}</div></>}{formError && <div className="dialog-error">{formError}</div>}<button className="dialog-primary" disabled={submitting || !channelAccess}>{submitting ? 'Salvando…' : 'Salvar acessos'}</button></form></ActionDialog>}
       {dialog && <ActionDialog title={dialog === 'community' ? 'Criar comunidade' : dialog === 'channel' ? 'Criar canal' : dialog === 'invite' ? 'Convidar pessoas' : 'Entrar com convite'} onClose={() => setDialog(null)}>{dialog === 'community' ? <form onSubmit={createCommunity}><p>Você será o proprietário e poderá convidar outras pessoas depois.</p><label>Nome da comunidade<input autoFocus value={communityName} maxLength={80} onChange={(event) => setCommunityName(event.target.value)} placeholder="ex: Comunidade Voz Livre" required /></label>{formError && <div className="dialog-error">{formError}</div>}<button className="dialog-primary" disabled={submitting}>{submitting ? 'Criando…' : 'Criar comunidade'}</button></form> : dialog === 'channel' ? <form onSubmit={createChannel}><label>Nome do canal<input autoFocus value={channelName} maxLength={50} onChange={(event) => setChannelName(event.target.value)} placeholder="ex: projetos" required /></label><fieldset><legend>Tipo</legend><button type="button" className={channelKind === 'TEXT' ? 'selected' : ''} onClick={() => setChannelKind('TEXT')}><Hash size={18} />Texto</button><button type="button" className={channelKind === 'VOICE' ? 'selected' : ''} onClick={() => setChannelKind('VOICE')}><Volume2 size={18} />Voz</button></fieldset>{formError && <div className="dialog-error">{formError}</div>}<button className="dialog-primary" disabled={submitting}>{submitting ? 'Criando…' : 'Criar canal'}</button></form> : dialog === 'invite' ? <div className="invite-dialog"><p>Este espaço é privado. O link expira em 7 dias.</p>{inviteUrl ? <><label>Link de convite<input readOnly value={inviteUrl} /></label><button className="dialog-primary" onClick={() => void navigator.clipboard.writeText(inviteUrl)}><Copy size={16} /> Copiar convite</button></> : <button className="dialog-primary" disabled={submitting} onClick={() => void createInvite()}>{submitting ? 'Gerando…' : 'Gerar convite'}</button>}{formError && <div className="dialog-error">{formError}</div>}</div> : <form onSubmit={joinInvite}><p>Cole o link ou código enviado pelo administrador.</p><label>Convite<input autoFocus value={joinCode} onChange={(event) => setJoinCode(event.target.value)} placeholder="Código ou link de convite" required /></label>{formError && <div className="dialog-error">{formError}</div>}<button className="dialog-primary" disabled={submitting}>{submitting ? 'Entrando…' : 'Entrar na comunidade'}</button></form>}</ActionDialog>}
     </main>
   )
 
   if (!callToken) return shell
-  return <LiveKitRoom className="voice-room-root" token={callToken} serverUrl={import.meta.env.VITE_LIVEKIT_URL ?? 'ws://localhost:7880'} options={LOW_LATENCY_ROOM_OPTIONS} connect audio video={false} onConnected={() => { if (voiceChannelId) socket.emit('voice:join', { channelId: voiceChannelId }) }} onDisconnected={() => leaveCall(voiceChannelId)} data-lk-theme="default">{shell}<RoomAudioRenderer /></LiveKitRoom>
+  return <LiveKitRoom className="voice-room-root" token={callToken} serverUrl={LIVEKIT_URL} options={LOW_LATENCY_ROOM_OPTIONS} connect audio video={false} onConnected={() => { if (voiceChannelId) socket.emit('voice:join', { channelId: voiceChannelId }) }} onDisconnected={() => leaveCall(voiceChannelId)} data-lk-theme="default">{shell}<RoomAudioRenderer /></LiveKitRoom>
 }
 
 function ChannelGroup({ title, channels: items, active, voicePresence = {}, onSelect, onAdd, onInvite, onOpenVoice, onLeaveVoice }: { title: string; channels: Channel[]; active: string; voicePresence?: Record<string, VoiceParticipant[]>; onSelect: (id: string) => void; onAdd: () => void; onInvite?: () => void; onOpenVoice?: () => void; onLeaveVoice?: () => void }) {
@@ -433,4 +468,9 @@ function SettingsPanel({ user, onClose, onLogout }: { user: AuthUser; onClose: (
 }
 
 function Avatar({ name, index }: { name: string; index: number }) { const palette = ['#4967ff', '#ff735f', '#31b98d', '#927dff']; return <div className="avatar message__avatar" style={{ background: palette[index % palette.length] }}>{name.slice(0, 1).toUpperCase()}<span /></div> }
+
+function messageDay(value: string) { const date = new Date(value); return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}` }
+function formatMessageDate(value: string) { return new Date(value).toLocaleDateString('pt-BR', { day: 'numeric', month: 'long', year: 'numeric' }) }
+function formatMessageTime(value: string) { return new Date(value).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) }
+function isCompactMessage(previous: Message | undefined, current: Message) { return Boolean(previous && previous.author === current.author && messageDay(previous.createdAt) === messageDay(current.createdAt) && new Date(current.createdAt).getTime() - new Date(previous.createdAt).getTime() < 5 * 60 * 1000) }
 export default App

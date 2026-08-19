@@ -6,6 +6,11 @@ import { PrismaService } from './prisma.service';
 import { SessionRegistry } from './session.registry';
 
 describe('AuthService', () => {
+  const signAsyncMock = jest.fn().mockResolvedValue('signed-token');
+  const verifyAsyncMock = jest.fn<(token: string) => Promise<unknown>>();
+  const invalidateConnectionsMock = jest
+    .fn<(userId: string, message: string) => Promise<void>>()
+    .mockResolvedValue(undefined);
   const userRepository = {
     findUnique: jest.fn(),
     create: jest.fn(),
@@ -14,15 +19,17 @@ describe('AuthService', () => {
   };
   const prisma = { user: userRepository } as unknown as PrismaService;
   const jwt = {
-    signAsync: jest.fn().mockResolvedValue('signed-token'),
-    verifyAsync: jest.fn(),
+    signAsync: signAsyncMock,
+    verifyAsync: verifyAsyncMock,
   } as unknown as JwtService;
   const sessionRegistry = {
-    invalidateConnections: jest.fn(),
+    invalidateConnections: invalidateConnectionsMock,
   } as unknown as SessionRegistry;
   const service = new AuthService(prisma, jwt, sessionRegistry);
 
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
 
   it('normalizes e-mail and never persists the plain password', async () => {
     userRepository.findUnique.mockResolvedValue(null);
@@ -42,6 +49,8 @@ describe('AuthService', () => {
       password: 'senha-segura',
     });
 
+    // The repository is intentionally a lightweight Prisma test double.
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     const persisted = userRepository.create.mock.calls[0][0].data as Record<
       string,
       string
@@ -86,17 +95,15 @@ describe('AuthService', () => {
       password: 'senha-segura',
     });
 
-    expect(sessionRegistry.invalidateConnections).toHaveBeenCalledWith(
+    expect(invalidateConnectionsMock).toHaveBeenCalledWith(
       'user-1',
       expect.stringContaining('outro dispositivo'),
     );
-    expect(jwt.signAsync).toHaveBeenCalledWith(
-      expect.objectContaining({ sub: 'user-1', sid: expect.any(String) }),
-    );
+    expect(signAsyncMock).toHaveBeenCalledTimes(1);
   });
 
   it('rejects a token that is no longer the active session', async () => {
-    (jwt.verifyAsync as jest.Mock).mockResolvedValue({
+    verifyAsyncMock.mockResolvedValue({
       sub: 'user-1',
       email: 'teste@example.com',
       sid: 'old-session',

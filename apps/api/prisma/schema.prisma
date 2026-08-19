@@ -13,25 +13,26 @@ enum ChannelKind {
 }
 
 model User {
-  id          String       @id @default(cuid())
-  email       String       @unique
-  passwordHash String
-  displayName String
-  avatarUrl   String?
+  id              String                @id @default(cuid())
+  email           String                @unique
+  passwordHash    String
+  displayName     String
+  avatarUrl       String?
   activeSessionId String?
-  memberships Membership[]
-  messages    Message[]
-  createdInvites SpaceInvite[] @relation("InviteCreator")
-  createdAt   DateTime     @default(now())
+  memberships     Membership[]
+  messages        Message[]
+  channelAccess   ChannelMemberAccess[]
+  createdInvites  SpaceInvite[]         @relation("InviteCreator")
+  createdAt       DateTime              @default(now())
 }
 
 model Space {
-  id          String       @id @default(cuid())
+  id          String        @id @default(cuid())
   name        String
   memberships Membership[]
   channels    Channel[]
   invites     SpaceInvite[]
-  createdAt   DateTime     @default(now())
+  createdAt   DateTime      @default(now())
 }
 
 model Membership {
@@ -45,41 +46,62 @@ model Membership {
 }
 
 model Channel {
-  id        String      @id @default(cuid())
-  spaceId   String
-  name      String
-  kind      ChannelKind
-  position  Int         @default(0)
-  space     Space       @relation(fields: [spaceId], references: [id], onDelete: Cascade)
-  messages  Message[]
-  createdAt DateTime    @default(now())
+  id           String                @id @default(cuid())
+  spaceId      String
+  name         String
+  kind         ChannelKind
+  position     Int                   @default(0)
+  isRestricted Boolean               @default(false)
+  space        Space                 @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  messages     Message[]
+  memberAccess ChannelMemberAccess[]
+  roleAccess   ChannelRoleAccess[]
+  createdAt    DateTime              @default(now())
 
-  @@index([spaceId, position])
   @@unique([spaceId, name])
+  @@index([spaceId, position])
+}
+
+model ChannelMemberAccess {
+  channelId String
+  userId    String
+  channel   Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([channelId, userId])
+  @@index([userId])
+}
+
+model ChannelRoleAccess {
+  channelId String
+  role      String
+  channel   Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@id([channelId, role])
 }
 
 model SpaceInvite {
-  id          String   @id @default(cuid())
-  code        String   @unique
+  id          String    @id @default(cuid())
+  code        String    @unique
   spaceId     String
   createdById String
-  uses        Int      @default(0)
+  uses        Int       @default(0)
   expiresAt   DateTime?
-  createdAt   DateTime @default(now())
-  space       Space    @relation(fields: [spaceId], references: [id], onDelete: Cascade)
-  createdBy   User     @relation("InviteCreator", fields: [createdById], references: [id], onDelete: Cascade)
+  createdAt   DateTime  @default(now())
+  space       Space     @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  createdBy   User      @relation("InviteCreator", fields: [createdById], references: [id], onDelete: Cascade)
 
   @@index([spaceId, createdAt])
 }
 
 model Message {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid())
   channelId String
   authorId  String
-  body      String   @db.VarChar(4000)
-  channel   Channel  @relation(fields: [channelId], references: [id], onDelete: Cascade)
-  author    User     @relation(fields: [authorId], references: [id], onDelete: Restrict)
-  createdAt DateTime @default(now())
+  body      String    @db.VarChar(4000)
+  channel   Channel   @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  author    User      @relation(fields: [authorId], references: [id], onDelete: Restrict)
+  createdAt DateTime  @default(now())
   editedAt  DateTime?
 
   @@index([channelId, createdAt])

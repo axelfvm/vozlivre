@@ -49,14 +49,14 @@ export class VoicePresenceService {
     );
   }
 
-  snapshot(spaceIds: string[]) {
-    const channels = new Map<string, string>();
+  snapshot(channelIds: string[]) {
+    const channels = new Set<string>();
     for (const connection of this.connections.values()) {
-      if (spaceIds.includes(connection.spaceId)) {
-        channels.set(connection.channelId, connection.spaceId);
+      if (channelIds.includes(connection.channelId)) {
+        channels.add(connection.channelId);
       }
     }
-    return [...channels].map(([channelId]) => ({
+    return [...channels].map((channelId) => ({
       channelId,
       participants: this.participants(channelId),
     }));

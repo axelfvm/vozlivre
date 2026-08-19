@@ -3,10 +3,17 @@
   "private": true,
   "author": "Axel Foley",
   "license": "BSD-3-Clause",
+  "packageManager": "pnpm@11.19.0",
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "scripts": {
     "dev": "pnpm --parallel --filter api --filter web dev",
     "build": "pnpm --filter api build && pnpm --filter web build",
     "test": "pnpm --filter api test --runInBand",
+    "test:e2e": "pnpm --filter api test:e2e --runInBand",
+    "lint": "pnpm --filter api lint && pnpm --filter web lint",
+    "check": "pnpm lint && pnpm test && pnpm test:e2e && pnpm build",
     "infra:up": "docker compose up -d postgres redis livekit",
     "infra:down": "docker compose down"
   }

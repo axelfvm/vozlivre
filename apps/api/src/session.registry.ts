@@ -16,7 +16,7 @@ export class SessionRegistry {
 
   async invalidateConnections(userId: string, message: string) {
     await Promise.allSettled(
-      [...this.listeners].map((listener) => listener(userId, message)),
+      [...this.listeners].map(async (listener) => listener(userId, message)),
     );
   }
 }

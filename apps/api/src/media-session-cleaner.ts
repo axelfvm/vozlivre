@@ -1,5 +1,6 @@
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { RoomServiceClient } from 'livekit-server-sdk';
+import { ConfigService } from '@nestjs/config';
 import { SessionRegistry } from './session.registry';
 
 @Injectable()
@@ -7,15 +8,18 @@ export class MediaSessionCleaner implements OnModuleInit, OnModuleDestroy {
   private readonly roomService: RoomServiceClient;
   private unsubscribeSessions?: () => void;
 
-  constructor(private readonly sessions: SessionRegistry) {
-    const livekitUrl = (process.env.LIVEKIT_URL ?? 'ws://localhost:7880')
+  constructor(
+    private readonly sessions: SessionRegistry,
+    config: ConfigService,
+  ) {
+    const livekitUrl = config
+      .getOrThrow<string>('LIVEKIT_URL')
       .replace(/^wss:/, 'https:')
       .replace(/^ws:/, 'http:');
     this.roomService = new RoomServiceClient(
       livekitUrl,
-      process.env.LIVEKIT_API_KEY ?? 'devkey',
-      process.env.LIVEKIT_API_SECRET ??
-        'vozlivre-dev-secret-please-change-1234567890',
+      config.getOrThrow<string>('LIVEKIT_API_KEY'),
+      config.getOrThrow<string>('LIVEKIT_API_SECRET'),
     );
   }
 

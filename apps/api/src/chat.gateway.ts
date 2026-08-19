@@ -1,4 +1,4 @@
-import { OnModuleDestroy } from '@nestjs/common';
+import { ForbiddenException, OnModuleDestroy } from '@nestjs/common';
 import { ChannelKind } from '@prisma/client';
 import {
   ConnectedSocket,
@@ -13,17 +13,11 @@ import {
 import { Server, Socket } from 'socket.io';
 import { AuthService } from './auth.service';
 import type { AuthUser } from './auth.types';
+import { ChatService, type ChatMessage } from './chat.service';
 import { SessionRegistry } from './session.registry';
 import { SpacesService } from './spaces.service';
 import { VoicePresenceService } from './voice-presence.service';
-
-type ChatMessage = {
-  id: string;
-  channelId: string;
-  author: string;
-  body: string;
-  createdAt: string;
-};
+import { websocketOriginAllowed } from './environment';
 
 type AuthenticatedSocketData = {
   user?: AuthUser;
@@ -31,7 +25,16 @@ type AuthenticatedSocketData = {
 };
 
 @WebSocketGateway({
-  cors: { origin: 'http://localhost:5173', credentials: true },
+  cors: {
+    credentials: true,
+    origin: (
+      origin: string | undefined,
+      callback: (error: Error | null, allowed?: boolean) => void,
+    ) => {
+      if (websocketOriginAllowed(origin)) callback(null, true);
+      else callback(new Error('Origem não autorizada.'));
+    },
+  },
 })
 export class ChatGateway
   implements
@@ -43,12 +46,11 @@ export class ChatGateway
   @WebSocketServer()
   server!: Server;
 
-  private readonly messages: ChatMessage[] = [];
-
   private unsubscribeSessions?: () => void;
 
   constructor(
     private readonly auth: AuthService,
+    private readonly chat: ChatService,
     private readonly sessions: SessionRegistry,
     private readonly spaces: SpacesService,
     private readonly voicePresence: VoicePresenceService,
@@ -88,8 +90,7 @@ export class ChatGateway
 
   handleDisconnect(client: Socket) {
     const previous = this.voicePresence.leave(client.id);
-    if (previous)
-      this.broadcastVoiceChannel(previous.spaceId, previous.channelId);
+    if (previous) this.broadcastVoiceChannel(previous.channelId);
   }
 
   @SubscribeMessage('spaces:sync')
@@ -122,12 +123,9 @@ export class ChatGateway
         change.previous &&
         change.previous.channelId !== change.current.channelId
       ) {
-        this.broadcastVoiceChannel(
-          change.previous.spaceId,
-          change.previous.channelId,
-        );
+        this.broadcastVoiceChannel(change.previous.channelId);
       }
-      this.broadcastVoiceChannel(channel.spaceId, channel.id);
+      this.broadcastVoiceChannel(channel.id);
     } catch {
       client.emit('voice:error', {
         message: 'Você não tem acesso a este canal de voz.',
@@ -141,8 +139,7 @@ export class ChatGateway
     @MessageBody() payload: { channelId?: string },
   ) {
     const previous = this.voicePresence.leave(client.id, payload.channelId);
-    if (previous)
-      this.broadcastVoiceChannel(previous.spaceId, previous.channelId);
+    if (previous) this.broadcastVoiceChannel(previous.channelId);
   }
 
   @SubscribeMessage('chat:join')
@@ -151,36 +148,27 @@ export class ChatGateway
     @MessageBody() payload: { channelId: string },
   ) {
     const user = (client.data as AuthenticatedSocketData).user;
-    if (
-      !user ||
-      !(await this.spaces.canAccessChannel(user.id, payload.channelId))
-    ) {
+    if (!user) {
       client.emit('chat:error', {
         message: 'Você não tem acesso a este canal.',
       });
       return;
     }
-    for (const room of client.rooms) {
-      if (room.startsWith('channel:')) await client.leave(room);
-    }
-    await client.join(`channel:${payload.channelId}`);
-    if (
-      !this.messages.some((message) => message.channelId === payload.channelId)
-    ) {
-      this.messages.push({
-        id: `welcome-${payload.channelId}`,
-        channelId: payload.channelId,
-        author: 'VozLivre',
-        body: 'Este é o começo deste canal privado.',
-        createdAt: new Date().toISOString(),
+    try {
+      const history = await this.chat.history(user.id, payload.channelId);
+      for (const room of client.rooms) {
+        if (room.startsWith('channel:')) await client.leave(room);
+      }
+      await client.join(`channel:${payload.channelId}`);
+      client.emit('chat:history', history);
+    } catch (error) {
+      client.emit('chat:error', {
+        message:
+          error instanceof ForbiddenException
+            ? error.message
+            : 'Não foi possível carregar as mensagens deste canal.',
       });
     }
-    client.emit(
-      'chat:history',
-      this.messages.filter(
-        (message) => message.channelId === payload.channelId,
-      ),
-    );
   }
 
   @SubscribeMessage('chat:send')
@@ -189,47 +177,51 @@ export class ChatGateway
     @MessageBody() payload: Pick<ChatMessage, 'channelId' | 'body'>,
   ) {
     const user = (client.data as AuthenticatedSocketData).user;
-    if (
-      !user ||
-      !(await this.spaces.canAccessChannel(user.id, payload.channelId))
-    ) {
+    if (!user) {
       client.emit('chat:error', {
         message: 'Você não tem acesso a este canal.',
       });
       return;
     }
-    const body = payload.body.trim().slice(0, 4000);
-    if (!body) return;
-
-    const message: ChatMessage = {
-      channelId: payload.channelId,
-      author: user.displayName,
-      body,
-      id: crypto.randomUUID(),
-      createdAt: new Date().toISOString(),
-    };
-    this.messages.push(message);
-    this.server
-      .to(`channel:${payload.channelId}`)
-      .emit('chat:message', message);
+    try {
+      const message = await this.chat.create(user.id, payload);
+      if (!message) return;
+      this.server
+        .to(`channel:${payload.channelId}`)
+        .emit('chat:message', message);
+    } catch (error) {
+      client.emit('chat:error', {
+        message:
+          error instanceof ForbiddenException
+            ? error.message
+            : 'Não foi possível enviar a mensagem.',
+      });
+    }
   }
 
   private async syncSpaceRooms(client: Socket, userId: string) {
-    const spaceIds = await this.spaces.spaceIdsForUser(userId);
+    const [spaceIds, channelIds] = await Promise.all([
+      this.spaces.spaceIdsForUser(userId),
+      this.spaces.channelIdsForUser(userId),
+    ]);
     for (const room of client.rooms) {
       if (room.startsWith('space:')) await client.leave(room);
+      if (room.startsWith('presence-channel:')) await client.leave(room);
     }
     for (const spaceId of spaceIds) {
       await client.join(`space:${spaceId}`);
     }
+    for (const channelId of channelIds) {
+      await client.join(`presence-channel:${channelId}`);
+    }
     client.emit(
       'voice:presence:snapshot',
-      this.voicePresence.snapshot(spaceIds),
+      this.voicePresence.snapshot(channelIds),
     );
   }
 
-  private broadcastVoiceChannel(spaceId: string, channelId: string) {
-    this.server.to(`space:${spaceId}`).emit('voice:presence', {
+  private broadcastVoiceChannel(channelId: string) {
+    this.server.to(`presence-channel:${channelId}`).emit('voice:presence', {
       channelId,
       participants: this.voicePresence.participants(channelId),
     });

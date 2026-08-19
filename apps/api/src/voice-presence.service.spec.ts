@@ -39,7 +39,7 @@ describe('VoicePresenceService', () => {
     expect(presence.participants('voice-2')).toHaveLength(0);
   });
 
-  it('only exposes snapshot channels from authorized spaces', () => {
+  it('only exposes explicitly authorized channels in a snapshot', () => {
     const presence = new VoicePresenceService();
     presence.join('socket-1', {
       channelId: 'voice-1',
@@ -54,7 +54,7 @@ describe('VoicePresenceService', () => {
       displayName: 'Outro usuário',
     });
 
-    expect(presence.snapshot(['space-1'])).toEqual([
+    expect(presence.snapshot(['voice-1'])).toEqual([
       {
         channelId: 'voice-1',
         participants: [{ userId: 'user-1', displayName: 'Axel' }],

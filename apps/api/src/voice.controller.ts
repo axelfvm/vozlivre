@@ -2,6 +2,7 @@ import { Body, Controller, Post, Req, UseGuards } from '@nestjs/common';
 import { IsNotEmpty, IsString, MaxLength } from 'class-validator';
 import { AccessToken } from 'livekit-server-sdk';
 import { ChannelKind } from '@prisma/client';
+import { ConfigService } from '@nestjs/config';
 import { AuthGuard, type AuthenticatedRequest } from './auth.guard';
 import { SpacesService } from './spaces.service';
 
@@ -15,7 +16,10 @@ class VoiceTokenDto {
 @Controller('voice')
 @UseGuards(AuthGuard)
 export class VoiceController {
-  constructor(private readonly spaces: SpacesService) {}
+  constructor(
+    private readonly spaces: SpacesService,
+    private readonly config: ConfigService,
+  ) {}
 
   @Post('token')
   async createToken(
@@ -27,10 +31,8 @@ export class VoiceController {
       input.channelId,
       ChannelKind.VOICE,
     );
-    const key = process.env.LIVEKIT_API_KEY ?? 'devkey';
-    const secret =
-      process.env.LIVEKIT_API_SECRET ??
-      'vozlivre-dev-secret-please-change-1234567890';
+    const key = this.config.getOrThrow<string>('LIVEKIT_API_KEY');
+    const secret = this.config.getOrThrow<string>('LIVEKIT_API_SECRET');
     const token = new AccessToken(key, secret, {
       identity: `${request.user.id}:${request.sessionId}`,
       name: request.user.displayName,

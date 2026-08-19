@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: vozlivre_test
+          POSTGRES_USER: vozlivre
+          POSTGRES_PASSWORD: vozlivre_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U vozlivre -d vozlivre_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      NODE_ENV: test
+      PORT: 3000
+      WEB_ORIGIN: http://localhost:5173
+      DATABASE_URL: postgresql://vozlivre:vozlivre_test@localhost:5432/vozlivre_test
+      LIVEKIT_URL: ws://localhost:7880
+      LIVEKIT_API_KEY: test-key
+      LIVEKIT_API_SECRET: test-livekit-secret-with-at-least-32-characters
+      JWT_SECRET: test-jwt-secret-with-at-least-32-characters
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter api exec prisma migrate deploy
+      - run: pnpm check
+      - run: pnpm audit --prod

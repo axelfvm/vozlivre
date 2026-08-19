@@ -23,6 +23,10 @@ export class AuthService {
     displayName: string;
   }) {
     const email = input.email.trim().toLowerCase();
+    const displayName = input.displayName.trim().replace(/\s+/g, ' ');
+    if (!displayName) {
+      throw new ConflictException('Informe um nome de exibição válido.');
+    }
     const existing = await this.prisma.user.findUnique({ where: { email } });
     if (existing) throw new ConflictException('Este e-mail já está em uso.');
 
@@ -30,7 +34,7 @@ export class AuthService {
     const authenticatedUser = await this.prisma.user.create({
       data: {
         email,
-        displayName: input.displayName.trim(),
+        displayName,
         passwordHash: await hash(input.password, 12),
         activeSessionId: sessionId,
       },
