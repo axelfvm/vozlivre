@@ -71,7 +71,7 @@ function App() {
       .finally(() => setLoading(false))
   }, [])
 
-  if (loading) return <div className="auth-loading"><div className="auth-mark">VL</div><span>Carregando seu espaço…</span></div>
+  if (loading) return <div className="auth-loading"><div className="auth-mark"><img src="/app-icon-192.png" alt="" /></div><span>Carregando seu espaço…</span></div>
   if (!user) return <AuthScreen initialError={sessionNotice} onAuthenticated={(authenticatedUser) => { setSessionNotice(''); setUser(authenticatedUser) }} />
 
   return <ChatApp user={user} onLogout={handleLogout} />
@@ -261,7 +261,7 @@ function ChatApp({ user, onLogout }: { user: AuthUser; onLogout: (message?: stri
   const shell = (
     <main className="app-shell">
       <nav className="space-rail" aria-label="Espaços">
-        <button className="space space--brand" aria-label="Início">VL</button><div className="rail-divider" />
+        <button className="space space--brand" aria-label="Início"><img src="/app-icon-192.png" alt="" /></button><div className="rail-divider" />
         {spaces.map((space, index) => <button key={space.id} className={`space ${space.id === activeSpace?.id ? 'space--active' : ''}`} style={{ '--space-color': ['#ff735f', '#826cff', '#31b98d'][index % 3] } as React.CSSProperties} aria-label={space.name} title={space.name} onClick={() => selectSpace(space)}>{space.name.split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase()}</button>)}
         <button className="space space--action" aria-label="Criar comunidade" title="Criar comunidade" onClick={() => openDialog('community')}><Plus size={21} /></button>
         <button className="space space--action" aria-label="Entrar com convite" title="Entrar com convite" onClick={() => openDialog('join')}><Link2 size={19} /></button>
@@ -396,9 +396,9 @@ function AuthScreen({ initialError = '', onAuthenticated }: { initialError?: str
   }
 
   return <main className="auth-page">
-    <section className="auth-story"><div className="auth-brand"><div className="auth-mark">VL</div><strong>VozLivre</strong></div><div className="auth-story__copy"><span>CONVERSE SEM DISTÂNCIA</span><h1>Seu grupo inteiro,<br />na mesma frequência.</h1><p>Canais, mensagens e chamadas em um espaço criado para permanecer próximo.</p></div><div className="signal-orbit"><i /><i /><i /><div><Mic size={28} /></div></div></section>
+    <section className="auth-story"><div className="auth-brand"><div className="auth-mark"><img src="/app-icon-192.png" alt="" /></div><strong>VozLivre</strong></div><div className="auth-story__copy"><span>CONVERSE SEM DISTÂNCIA</span><h1>Seu grupo inteiro,<br />na mesma frequência.</h1><p>Canais, mensagens e chamadas em um espaço criado para permanecer próximo.</p></div><div className="signal-orbit"><i /><i /><i /><div><Mic size={28} /></div></div></section>
     <section className="auth-panel"><form className="auth-card" onSubmit={submit}>
-      <div className="auth-brand auth-brand--mobile"><div className="auth-mark">VL</div><strong>VozLivre</strong></div>
+      <div className="auth-brand auth-brand--mobile"><div className="auth-mark"><img src="/app-icon-192.png" alt="" /></div><strong>VozLivre</strong></div>
       <header><span>{mode === 'login' ? 'BEM-VINDO DE VOLTA' : 'CRIE SEU ESPAÇO'}</span><h2>{mode === 'login' ? 'Entre na sua conta' : 'Crie sua conta'}</h2><p>{mode === 'login' ? 'Suas conversas estão esperando por você.' : 'Leva menos de um minuto para começar.'}</p></header>
       {mode === 'register' && <label className="auth-field"><span>Nome de exibição</span><div><Users size={17} /><input autoComplete="name" required maxLength={50} value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="Como as pessoas verão você" /></div></label>}
       <label className="auth-field"><span>E-mail</span><div><Mail size={17} /><input type="email" autoComplete="email" required value={email} onChange={(event) => setEmail(event.target.value)} placeholder="voce@exemplo.com" /></div></label>
