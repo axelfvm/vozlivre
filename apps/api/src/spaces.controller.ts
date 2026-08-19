@@ -2,6 +2,8 @@ import {
   Body,
   Controller,
   Get,
+  Delete,
+  Patch,
   Param,
   Post,
   Put,
@@ -17,6 +19,7 @@ import {
   IsNotEmpty,
   IsString,
   MaxLength,
+  Matches,
 } from 'class-validator';
 import { AuthGuard, type AuthenticatedRequest } from './auth.guard';
 import { SpacesService } from './spaces.service';
@@ -49,8 +52,35 @@ class UpdateChannelAccessDto {
   memberIds!: string[];
 
   @IsArray()
-  @IsIn(['owner', 'admin', 'member'], { each: true })
+  @IsString({ each: true })
   roles!: string[];
+}
+
+class UpdateNameDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(80)
+  name!: string;
+}
+
+class CreateRoleDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(40)
+  name!: string;
+
+  @IsString()
+  @Matches(/^#[0-9a-fA-F]{6}$/)
+  color!: string;
+}
+
+class UpdateMemberDto {
+  @IsIn(['admin', 'member'])
+  role!: string;
+
+  @IsArray()
+  @IsString({ each: true })
+  roleIds!: string[];
 }
 
 @Controller()
@@ -74,6 +104,78 @@ export class SpacesController {
     return this.spaces.createSpace(request.user.id, input);
   }
 
+  @Get('spaces/:spaceId/manage')
+  manage(
+    @Req() request: AuthenticatedRequest,
+    @Param('spaceId') spaceId: string,
+  ) {
+    return this.spaces.management(request.user.id, spaceId);
+  }
+
+  @Patch('spaces/:spaceId')
+  renameSpace(
+    @Req() request: AuthenticatedRequest,
+    @Param('spaceId') spaceId: string,
+    @Body() input: UpdateNameDto,
+  ) {
+    return this.spaces.renameSpace(request.user.id, spaceId, input.name);
+  }
+
+  @Delete('spaces/:spaceId')
+  deleteSpace(
+    @Req() request: AuthenticatedRequest,
+    @Param('spaceId') spaceId: string,
+  ) {
+    return this.spaces.deleteSpace(request.user.id, spaceId);
+  }
+
+  @Post('spaces/:spaceId/roles')
+  createRole(
+    @Req() request: AuthenticatedRequest,
+    @Param('spaceId') spaceId: string,
+    @Body() input: CreateRoleDto,
+  ) {
+    return this.spaces.createRole(request.user.id, spaceId, input);
+  }
+
+  @Patch('spaces/:spaceId/roles/:roleId')
+  updateRole(
+    @Req() request: AuthenticatedRequest,
+    @Param('spaceId') spaceId: string,
+    @Param('roleId') roleId: string,
+    @Body() input: CreateRoleDto,
+  ) {
+    return this.spaces.updateRole(request.user.id, spaceId, roleId, input);
+  }
+
+  @Delete('spaces/:spaceId/roles/:roleId')
+  deleteRole(
+    @Req() request: AuthenticatedRequest,
+    @Param('spaceId') spaceId: string,
+    @Param('roleId') roleId: string,
+  ) {
+    return this.spaces.deleteRole(request.user.id, spaceId, roleId);
+  }
+
+  @Put('spaces/:spaceId/members/:memberId')
+  updateMember(
+    @Req() request: AuthenticatedRequest,
+    @Param('spaceId') spaceId: string,
+    @Param('memberId') memberId: string,
+    @Body() input: UpdateMemberDto,
+  ) {
+    return this.spaces.updateMember(request.user.id, spaceId, memberId, input);
+  }
+
+  @Delete('spaces/:spaceId/members/:memberId')
+  removeMember(
+    @Req() request: AuthenticatedRequest,
+    @Param('spaceId') spaceId: string,
+    @Param('memberId') memberId: string,
+  ) {
+    return this.spaces.removeMember(request.user.id, spaceId, memberId);
+  }
+
   @Post('spaces/:spaceId/channels')
   createChannel(
     @Req() request: AuthenticatedRequest,
@@ -81,6 +183,30 @@ export class SpacesController {
     @Body() input: CreateChannelDto,
   ) {
     return this.spaces.createChannel(request.user.id, spaceId, input);
+  }
+
+  @Patch('spaces/:spaceId/channels/:channelId')
+  renameChannel(
+    @Req() request: AuthenticatedRequest,
+    @Param('spaceId') spaceId: string,
+    @Param('channelId') channelId: string,
+    @Body() input: UpdateNameDto,
+  ) {
+    return this.spaces.renameChannel(
+      request.user.id,
+      spaceId,
+      channelId,
+      input.name,
+    );
+  }
+
+  @Delete('spaces/:spaceId/channels/:channelId')
+  deleteChannel(
+    @Req() request: AuthenticatedRequest,
+    @Param('spaceId') spaceId: string,
+    @Param('channelId') channelId: string,
+  ) {
+    return this.spaces.deleteChannel(request.user.id, spaceId, channelId);
   }
 
   @Get('spaces/:spaceId/channels/:channelId/access')

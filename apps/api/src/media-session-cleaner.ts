@@ -33,6 +33,26 @@ export class MediaSessionCleaner implements OnModuleInit, OnModuleDestroy {
     this.unsubscribeSessions?.();
   }
 
+  async disconnectFromChannel(userId: string, channelId: string) {
+    try {
+      const roomName = `vozlivre-channel-${channelId}`;
+      const participants = await this.roomService.listParticipants(roomName);
+      await Promise.allSettled(
+        participants
+          .filter(
+            (participant) =>
+              participant.identity === userId ||
+              participant.identity.startsWith(`${userId}:`),
+          )
+          .map((participant) =>
+            this.roomService.removeParticipant(roomName, participant.identity),
+          ),
+      );
+    } catch {
+      // The authorization database remains authoritative if media is offline.
+    }
+  }
+
   private async disconnectParticipant(userId: string) {
     try {
       const rooms = await this.roomService.listRooms();

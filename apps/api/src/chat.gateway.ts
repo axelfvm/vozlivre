@@ -18,6 +18,8 @@ import { SessionRegistry } from './session.registry';
 import { SpacesService } from './spaces.service';
 import { VoicePresenceService } from './voice-presence.service';
 import { websocketOriginAllowed } from './environment';
+import { SpaceChangeRegistry } from './space-change.registry';
+import { MediaSessionCleaner } from './media-session-cleaner';
 
 type AuthenticatedSocketData = {
   user?: AuthUser;
@@ -47,6 +49,7 @@ export class ChatGateway
   server!: Server;
 
   private unsubscribeSessions?: () => void;
+  private unsubscribeSpaceChanges?: () => void;
 
   constructor(
     private readonly auth: AuthService,
@@ -54,6 +57,8 @@ export class ChatGateway
     private readonly sessions: SessionRegistry,
     private readonly spaces: SpacesService,
     private readonly voicePresence: VoicePresenceService,
+    private readonly spaceChanges: SpaceChangeRegistry,
+    private readonly mediaSessions: MediaSessionCleaner,
   ) {}
 
   afterInit() {
@@ -62,10 +67,43 @@ export class ChatGateway
       this.server.to(room).emit('auth:error', { message });
       this.server.in(room).disconnectSockets(true);
     });
+    this.unsubscribeSpaceChanges = this.spaceChanges.subscribe(
+      async (spaceId) => {
+        const sockets = await this.server.in(`space:${spaceId}`).fetchSockets();
+        await Promise.all(
+          sockets.map(async (socket) => {
+            const user = (socket.data as AuthenticatedSocketData).user;
+            if (user) {
+              await this.syncSpaceRooms(socket as unknown as Socket, user.id);
+              const presence = this.voicePresence.current(socket.id);
+              if (
+                presence &&
+                !(await this.spaces.canAccessChannel(
+                  user.id,
+                  presence.channelId,
+                ))
+              ) {
+                this.voicePresence.leave(socket.id, presence.channelId);
+                this.broadcastVoiceChannel(presence.channelId);
+                await this.mediaSessions.disconnectFromChannel(
+                  user.id,
+                  presence.channelId,
+                );
+                socket.emit('voice:error', {
+                  message: 'Seu acesso a este canal de voz foi removido.',
+                });
+              }
+            }
+            socket.emit('spaces:changed', { spaceId });
+          }),
+        );
+      },
+    );
   }
 
   onModuleDestroy() {
     this.unsubscribeSessions?.();
+    this.unsubscribeSpaceChanges?.();
   }
 
   async handleConnection(client: Socket) {
@@ -171,10 +209,30 @@ export class ChatGateway
     }
   }
 
+  @SubscribeMessage('chat:history:more')
+  async moreHistory(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { channelId: string; beforeId: string },
+  ) {
+    const user = (client.data as AuthenticatedSocketData).user;
+    if (!user) return;
+    try {
+      client.emit(
+        'chat:history:more',
+        await this.chat.history(user.id, payload.channelId, payload.beforeId),
+      );
+    } catch {
+      client.emit('chat:error', {
+        message: 'Não foi possível carregar mensagens anteriores.',
+      });
+    }
+  }
+
   @SubscribeMessage('chat:send')
   async send(
     @ConnectedSocket() client: Socket,
-    @MessageBody() payload: Pick<ChatMessage, 'channelId' | 'body'>,
+    @MessageBody()
+    payload: Pick<ChatMessage, 'channelId' | 'body'> & { replyToId?: string },
   ) {
     const user = (client.data as AuthenticatedSocketData).user;
     if (!user) {
@@ -199,6 +257,80 @@ export class ChatGateway
     }
   }
 
+  @SubscribeMessage('chat:edit')
+  async editMessage(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { messageId: string; body: string },
+  ) {
+    const user = (client.data as AuthenticatedSocketData).user;
+    if (!user) return;
+    try {
+      const message = await this.chat.edit(
+        user.id,
+        payload.messageId,
+        payload.body,
+      );
+      this.server
+        .to(`channel:${message.channelId}`)
+        .emit('chat:message:update', message);
+    } catch (error) {
+      client.emit('chat:error', {
+        message:
+          error instanceof Error
+            ? error.message
+            : 'Não foi possível editar a mensagem.',
+      });
+    }
+  }
+
+  @SubscribeMessage('chat:delete')
+  async deleteMessage(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { messageId: string },
+  ) {
+    const user = (client.data as AuthenticatedSocketData).user;
+    if (!user) return;
+    try {
+      const deleted = await this.chat.delete(user.id, payload.messageId);
+      this.server
+        .to(`channel:${deleted.channelId}`)
+        .emit('chat:message:delete', deleted);
+    } catch (error) {
+      client.emit('chat:error', {
+        message:
+          error instanceof Error
+            ? error.message
+            : 'Não foi possível excluir a mensagem.',
+      });
+    }
+  }
+
+  @SubscribeMessage('chat:reaction')
+  async reactMessage(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { messageId: string; emoji: string },
+  ) {
+    const user = (client.data as AuthenticatedSocketData).user;
+    if (!user) return;
+    try {
+      const update = await this.chat.toggleReaction(
+        user.id,
+        payload.messageId,
+        payload.emoji,
+      );
+      this.server
+        .to(`channel:${update.channelId}`)
+        .emit('chat:message:update', update.message);
+    } catch (error) {
+      client.emit('chat:error', {
+        message:
+          error instanceof Error
+            ? error.message
+            : 'Não foi possível reagir à mensagem.',
+      });
+    }
+  }
+
   private async syncSpaceRooms(client: Socket, userId: string) {
     const [spaceIds, channelIds] = await Promise.all([
       this.spaces.spaceIdsForUser(userId),
@@ -207,6 +339,12 @@ export class ChatGateway
     for (const room of client.rooms) {
       if (room.startsWith('space:')) await client.leave(room);
       if (room.startsWith('presence-channel:')) await client.leave(room);
+      if (
+        room.startsWith('channel:') &&
+        !channelIds.includes(room.slice('channel:'.length))
+      ) {
+        await client.leave(room);
+      }
     }
     for (const spaceId of spaceIds) {
       await client.join(`space:${spaceId}`);

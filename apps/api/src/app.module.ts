@@ -19,6 +19,7 @@ import { SpacesService } from './spaces.service';
 import { VoicePresenceService } from './voice-presence.service';
 import { validateEnvironment } from './environment';
 import { HealthController } from './health.controller';
+import { SpaceChangeRegistry } from './space-change.registry';
 
 @Module({
   imports: [
@@ -52,6 +53,7 @@ import { HealthController } from './health.controller';
     MediaSessionCleaner,
     SpacesService,
     VoicePresenceService,
+    SpaceChangeRegistry,
     { provide: APP_GUARD, useClass: ThrottlerGuard },
   ],
 })

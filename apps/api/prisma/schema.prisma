@@ -13,17 +13,18 @@ enum ChannelKind {
 }
 
 model User {
-  id              String                @id @default(cuid())
-  email           String                @unique
-  passwordHash    String
-  displayName     String
-  avatarUrl       String?
-  activeSessionId String?
-  memberships     Membership[]
-  messages        Message[]
-  channelAccess   ChannelMemberAccess[]
-  createdInvites  SpaceInvite[]         @relation("InviteCreator")
-  createdAt       DateTime              @default(now())
+  id               String                @id @default(cuid())
+  email            String                @unique
+  passwordHash     String
+  displayName      String
+  avatarUrl        String?
+  activeSessionId  String?
+  memberships      Membership[]
+  messages         Message[]
+  messageReactions MessageReaction[]
+  channelAccess    ChannelMemberAccess[]
+  createdInvites   SpaceInvite[]         @relation("InviteCreator")
+  createdAt        DateTime              @default(now())
 }
 
 model Space {
@@ -32,17 +33,45 @@ model Space {
   memberships Membership[]
   channels    Channel[]
   invites     SpaceInvite[]
+  roles       SpaceRole[]
   createdAt   DateTime      @default(now())
 }
 
 model Membership {
-  userId  String
-  spaceId String
-  role    String @default("member")
-  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  space   Space  @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  userId        String
+  spaceId       String
+  role          String           @default("member")
+  user          User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  space         Space            @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  assignedRoles MembershipRole[]
 
   @@id([userId, spaceId])
+}
+
+model SpaceRole {
+  id          String           @id @default(cuid())
+  spaceId     String
+  name        String
+  color       String           @default("#87909f")
+  position    Int              @default(0)
+  permissions String[]         @default([])
+  space       Space            @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  members     MembershipRole[]
+  createdAt   DateTime         @default(now())
+
+  @@unique([spaceId, name])
+  @@index([spaceId, position])
+}
+
+model MembershipRole {
+  userId     String
+  spaceId    String
+  roleId     String
+  membership Membership @relation(fields: [userId, spaceId], references: [userId, spaceId], onDelete: Cascade)
+  role       SpaceRole  @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, spaceId, roleId])
+  @@index([roleId])
 }
 
 model Channel {
@@ -95,14 +124,31 @@ model SpaceInvite {
 }
 
 model Message {
-  id        String    @id @default(cuid())
+  id        String            @id @default(cuid())
   channelId String
   authorId  String
-  body      String    @db.VarChar(4000)
-  channel   Channel   @relation(fields: [channelId], references: [id], onDelete: Cascade)
-  author    User      @relation(fields: [authorId], references: [id], onDelete: Restrict)
-  createdAt DateTime  @default(now())
+  replyToId String?
+  body      String            @db.VarChar(4000)
+  channel   Channel           @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  author    User              @relation(fields: [authorId], references: [id], onDelete: Restrict)
+  replyTo   Message?          @relation("MessageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies   Message[]         @relation("MessageReplies")
+  reactions MessageReaction[]
+  createdAt DateTime          @default(now())
   editedAt  DateTime?
 
   @@index([channelId, createdAt])
+  @@index([replyToId])
+}
+
+model MessageReaction {
+  messageId String
+  userId    String
+  emoji     String   @db.VarChar(32)
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@id([messageId, userId, emoji])
+  @@index([messageId, emoji])
 }

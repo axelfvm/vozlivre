@@ -1,14 +1,16 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import { AudioLines, Bell, Check, ChevronDown, ChevronRight, Copy, FileImage, Gift, Hash, HeadphoneOff, Headphones, KeyRound, LayoutGrid, Link2, Lock, LogOut, Mail, Mic, MonitorUp, Palette, PhoneOff, Pin, Plus, Radio, Send, Settings, Shield, SlidersHorizontal, Smile, Sparkles, Sticker, UserPlus, Users, Video, Volume2, X } from 'lucide-react'
+import { AudioLines, Bell, Check, ChevronDown, ChevronRight, Copy, FileImage, Gift, Hash, HeadphoneOff, Headphones, KeyRound, LayoutGrid, Link2, Lock, LogOut, Mail, Mic, MonitorUp, Palette, Pencil, PhoneOff, Pin, Plus, Radio, Reply, Save, Send, Settings, Shield, SlidersHorizontal, Smile, Sparkles, Sticker, Trash2, UserPlus, Users, Video, Volume2, X } from 'lucide-react'
 import { LiveKitRoom, RoomAudioRenderer, TrackToggle, VideoConference, useRoomContext } from '@livekit/components-react'
 import '@livekit/components-styles'
 import { RoomEvent, ScreenSharePresets, Track } from 'livekit-client'
 import type { RemoteParticipant, RoomOptions, ScreenShareCaptureOptions, TrackPublishOptions } from 'livekit-client'
 import { io } from 'socket.io-client'
 import './App.css'
+import { SpaceManagement } from './SpaceManagement'
 
-type Message = { id: string; channelId: string; author: string; body: string; createdAt: string }
+type Message = { id: string; channelId: string; authorId: string; author: string; body: string; createdAt: string; editedAt: string | null; replyTo: { id: string; author: string; body: string } | null; reactions: { emoji: string; count: number; userIds: string[] }[] }
+type HistoryPage = { messages: Message[]; hasMore: boolean }
 type Channel = { id: string; name: string; kind: 'TEXT' | 'VOICE'; position: number }
 type Space = { id: string; name: string; role: string; channels: Channel[] }
 type AuthUser = { id: string; email: string; displayName: string; avatarUrl: string | null }
@@ -78,15 +80,20 @@ function App() {
   if (loading) return <div className="auth-loading"><div className="auth-mark"><img src="/app-icon-192.png" alt="" /></div><span>Carregando seu espaço…</span></div>
   if (!user) return <AuthScreen initialError={sessionNotice} onAuthenticated={(authenticatedUser) => { setSessionNotice(''); setUser(authenticatedUser) }} />
 
-  return <ChatApp user={user} onLogout={handleLogout} />
+  return <ChatApp user={user} onLogout={handleLogout} onUserUpdated={setUser} />
 }
 
-function ChatApp({ user, onLogout }: { user: AuthUser; onLogout: (message?: string) => void }) {
+function ChatApp({ user, onLogout, onUserUpdated }: { user: AuthUser; onLogout: (message?: string) => void; onUserUpdated: (user: AuthUser) => void }) {
   const [spaces, setSpaces] = useState<Space[]>([])
   const [activeSpaceId, setActiveSpaceId] = useState('')
   const [activeChannelId, setActiveChannelId] = useState('')
   const [messages, setMessages] = useState<Message[]>([])
+  const [hasMoreMessages, setHasMoreMessages] = useState(false)
+  const [replyingTo, setReplyingTo] = useState<Message | null>(null)
+  const [editingId, setEditingId] = useState('')
+  const [editingBody, setEditingBody] = useState('')
   const messagesRef = useRef<HTMLDivElement>(null)
+  const olderScrollHeightRef = useRef<number | null>(null)
   const [draft, setDraft] = useState('')
   const [mobileNav, setMobileNav] = useState(false)
   const [callToken, setCallToken] = useState<string | null>(null)
@@ -95,6 +102,7 @@ function ChatApp({ user, onLogout }: { user: AuthUser; onLogout: (message?: stri
   const [showVoiceStage, setShowVoiceStage] = useState(false)
   const [callError, setCallError] = useState('')
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [spaceManagementOpen, setSpaceManagementOpen] = useState(false)
   const [workspaceMenu, setWorkspaceMenu] = useState(false)
   const [dialog, setDialog] = useState<'community' | 'channel' | 'invite' | 'join' | null>(null)
   const [communityName, setCommunityName] = useState('')
@@ -158,40 +166,53 @@ function ChatApp({ user, onLogout }: { user: AuthUser; onLogout: (message?: stri
   }, [loadSpaces])
 
   useEffect(() => {
-    const handleHistory = (history: Message[]) => setMessages(history)
+    const handleHistory = (history: HistoryPage) => { setMessages(history.messages); setHasMoreMessages(history.hasMore) }
+    const handleMoreHistory = (history: HistoryPage) => { const list = messagesRef.current; const previousHeight = olderScrollHeightRef.current; setMessages((current) => [...history.messages, ...current]); setHasMoreMessages(history.hasMore); requestAnimationFrame(() => { if (list && previousHeight !== null) list.scrollTop += list.scrollHeight - previousHeight; olderScrollHeightRef.current = null }) }
     const handleMessage = (message: Message) => setMessages((current) => [...current, message])
+    const handleMessageUpdate = (message: Message) => setMessages((current) => current.map((item) => item.id === message.id ? message : item))
+    const handleMessageDelete = ({ id }: { id: string }) => setMessages((current) => current.filter((item) => item.id !== id))
     const handleChatError = (payload: { message?: string }) => setCallError(payload.message ?? 'Não foi possível acessar o canal.')
     const handleVoiceError = (payload: { message?: string }) => setCallError(payload.message ?? 'Não foi possível atualizar a presença de voz.')
     const handleVoiceSnapshot = (snapshot: VoicePresenceUpdate[]) => setVoicePresence(Object.fromEntries(snapshot.map((entry) => [entry.channelId, entry.participants])))
     const handleVoicePresence = (update: VoicePresenceUpdate) => setVoicePresence((current) => ({ ...current, [update.channelId]: update.participants }))
     const handleConnect = () => socket.emit('spaces:sync')
+    const handleSpacesChanged = () => { void loadSpaces(activeSpaceId) }
     const handleAuthError = (payload: { message?: string }) => {
       setCallToken(null)
       onLogout(payload.message ?? 'Sua sessão não é mais válida.')
     }
     socket.on('chat:history', handleHistory)
     socket.on('chat:message', handleMessage)
+    socket.on('chat:history:more', handleMoreHistory)
+    socket.on('chat:message:update', handleMessageUpdate)
+    socket.on('chat:message:delete', handleMessageDelete)
     socket.on('auth:error', handleAuthError)
     socket.on('chat:error', handleChatError)
     socket.on('voice:error', handleVoiceError)
     socket.on('voice:presence:snapshot', handleVoiceSnapshot)
     socket.on('voice:presence', handleVoicePresence)
     socket.on('connect', handleConnect)
+    socket.on('spaces:changed', handleSpacesChanged)
     socket.connect()
-    return () => { socket.off('chat:history', handleHistory); socket.off('chat:message', handleMessage); socket.off('auth:error', handleAuthError); socket.off('chat:error', handleChatError); socket.off('voice:error', handleVoiceError); socket.off('voice:presence:snapshot', handleVoiceSnapshot); socket.off('voice:presence', handleVoicePresence); socket.off('connect', handleConnect); socket.disconnect() }
-  }, [onLogout])
+    return () => { socket.off('chat:history', handleHistory); socket.off('chat:history:more', handleMoreHistory); socket.off('chat:message', handleMessage); socket.off('chat:message:update', handleMessageUpdate); socket.off('chat:message:delete', handleMessageDelete); socket.off('auth:error', handleAuthError); socket.off('chat:error', handleChatError); socket.off('voice:error', handleVoiceError); socket.off('voice:presence:snapshot', handleVoiceSnapshot); socket.off('voice:presence', handleVoicePresence); socket.off('connect', handleConnect); socket.off('spaces:changed', handleSpacesChanged); socket.disconnect() }
+  }, [activeSpaceId, loadSpaces, onLogout])
 
   useEffect(() => { if (socket.connected) socket.emit('spaces:sync') }, [spaces])
 
   useEffect(() => { if (channel?.kind === 'TEXT') socket.emit('chat:join', { channelId: channel.id }) }, [channel])
-  useEffect(() => { const list = messagesRef.current; if (list) list.scrollTop = list.scrollHeight }, [activeChannelId, messages])
+  useEffect(() => { const list = messagesRef.current; if (list && olderScrollHeightRef.current === null) list.scrollTop = list.scrollHeight }, [activeChannelId, messages])
 
   const sendMessage = (event: FormEvent) => {
     event.preventDefault()
     if (!draft.trim()) return
     if (!channel || channel.kind !== 'TEXT') return
-    socket.emit('chat:send', { channelId: channel.id, body: draft })
-    setDraft('')
+    socket.emit('chat:send', { channelId: channel.id, body: draft, replyToId: replyingTo?.id })
+    setDraft(''); setReplyingTo(null)
+  }
+
+  const saveMessageEdit = (event: FormEvent, messageId: string) => {
+    event.preventDefault(); if (!editingBody.trim()) return
+    socket.emit('chat:edit', { messageId, body: editingBody }); setEditingId(''); setEditingBody('')
   }
 
   const joinCall = async (channelId: string) => {
@@ -304,7 +325,7 @@ function ChatApp({ user, onLogout }: { user: AuthUser; onLogout: (message?: stri
       <aside className={`channel-panel ${mobileNav ? 'channel-panel--open' : ''}`}>
         {activeSpace ? <>
           <button className="workspace-name" onClick={() => setWorkspaceMenu((value) => !value)}>{activeSpace.name} <ChevronDown size={17} /></button>
-          {workspaceMenu && <div className="workspace-menu"><button onClick={() => openDialog('invite')}><UserPlus size={16} /> Convidar pessoas</button><button onClick={() => openDialog('channel')}><Plus size={16} /> Criar canal</button><button onClick={() => openDialog('join')}><Link2 size={16} /> Entrar com convite</button><button><Settings size={16} /> Configurações do espaço</button></div>}
+          {workspaceMenu && <div className="workspace-menu"><button onClick={() => openDialog('invite')}><UserPlus size={16} /> Convidar pessoas</button><button onClick={() => openDialog('channel')}><Plus size={16} /> Criar canal</button><button onClick={() => openDialog('join')}><Link2 size={16} /> Entrar com convite</button>{['owner', 'admin'].includes(activeSpace.role) && <button onClick={() => { setWorkspaceMenu(false); setSpaceManagementOpen(true) }}><Settings size={16} /> Configurações do espaço</button>}</div>}
           <ChannelGroup title="CANAIS DE TEXTO" channels={activeSpace.channels.filter((item) => item.kind === 'TEXT')} active={activeChannelId} onAdd={() => openDialog('channel')} onSelect={(id) => { setMessages([]); setActiveChannelId(id); setMobileNav(false); setShowVoiceStage(false) }} />
           <ChannelGroup title="CANAIS DE VOZ" channels={activeSpace.channels.filter((item) => item.kind === 'VOICE')} active={voiceChannelId} voicePresence={voicePresence} onAdd={() => openDialog('channel')} onSelect={(id) => void joinCall(id)} onInvite={() => openDialog('invite')} onOpenVoice={() => setShowVoiceStage(true)} onLeaveVoice={() => leaveCall()} />
         </> : <>
@@ -312,7 +333,7 @@ function ChatApp({ user, onLogout }: { user: AuthUser; onLogout: (message?: stri
           <div className="channel-empty"><strong>Nenhuma comunidade</strong><span>Crie a sua ou use um convite para entrar.</span><button onClick={() => openDialog('community')}><Plus size={16} /> Criar comunidade</button><button onClick={() => openDialog('join')}><Link2 size={16} /> Entrar com convite</button></div>
         </>}
         {callToken && voiceChannel && activeSpace && <VoiceConnectionDock channel={voiceChannel} spaceName={activeSpace.name} onLeave={() => leaveCall()} onOpenStage={() => setShowVoiceStage(true)} onInvite={() => openDialog('invite')} />}
-        <div className="profile-bar"><div className="avatar avatar--self">{user.displayName[0].toUpperCase()}<span /></div><div className="profile-copy"><strong>{user.displayName}</strong><span>{callToken && voiceChannel ? `Em ${voiceChannel.name}` : 'Disponível'}</span></div>{callToken ? <TrackToggle className="profile-voice-toggle" source={Track.Source.Microphone} aria-label="Microfone" /> : <button aria-label="Microfone"><Mic size={18} /></button>}{callToken ? <DeafenToggle /> : <button aria-label="Áudio"><Headphones size={18} /></button>}<button aria-label="Configurações" onClick={() => setSettingsOpen(true)}><Settings size={18} /></button></div>
+        <div className="profile-bar"><div className="avatar avatar--self">{user.displayName[0].toUpperCase()}</div><div className="profile-copy"><strong>{user.displayName}</strong><span>{callToken && voiceChannel ? `Em ${voiceChannel.name}` : 'VozLivre'}</span></div>{callToken ? <TrackToggle className="profile-voice-toggle" source={Track.Source.Microphone} aria-label="Microfone" /> : <button aria-label="Microfone"><Mic size={18} /></button>}{callToken ? <DeafenToggle /> : <button aria-label="Áudio"><Headphones size={18} /></button>}<button aria-label="Configurações" onClick={() => setSettingsOpen(true)}><Settings size={18} /></button></div>
       </aside>
 
       <section className="conversation">
@@ -324,19 +345,22 @@ function ChatApp({ user, onLogout }: { user: AuthUser; onLogout: (message?: stri
         </header>
         {showVoiceStage && callToken ? <div className="voice-stage"><VideoConference /><TrackToggle className="low-latency-share" source={Track.Source.ScreenShare} captureOptions={LOW_LATENCY_SCREEN_CAPTURE} publishOptions={LOW_LATENCY_SCREEN_PUBLISH}><MonitorUp size={16} /><span>Compartilhar tela</span></TrackToggle></div> : <><div className="messages" ref={messagesRef} aria-live="polite">
           <div className="channel-intro"><div className="channel-intro__icon"><Hash size={40} /><Lock size={13} /></div><h1>Bem-vindo(a) a #{channel?.name}!</h1><p>Este é o começo do canal particular <strong>#{channel?.name}</strong>.</p>{['owner', 'admin'].includes(activeSpace.role) && <div className="channel-intro__actions"><button onClick={() => void openChannelAccess()}><UserPlus size={15} /> Adicionar membros ou cargos</button><button onClick={() => openDialog('channel')}><Plus size={15} /> Criar canal</button></div>}<span className="channel-role-badge"><span /> {activeSpace.role === 'owner' ? 'Proprietário' : activeSpace.role === 'admin' ? 'Administrador' : 'Membro'}</span></div>
+          {hasMoreMessages && messages[0] && <button className="load-older" onClick={() => { olderScrollHeightRef.current = messagesRef.current?.scrollHeight ?? 0; socket.emit('chat:history:more', { channelId: channel?.id, beforeId: messages[0].id }) }}>Carregar mensagens anteriores</button>}
           {messages.map((message, index) => {
             const previous = messages[index - 1]
             const showDate = !previous || messageDay(previous.createdAt) !== messageDay(message.createdAt)
             const compact = isCompactMessage(previous, message)
-            return <Fragment key={message.id}>{showDate && <div className="message-date"><span>{formatMessageDate(message.createdAt)}</span></div>}<article className={`message ${compact ? 'message--compact' : ''}`}>{compact ? <time className="message__hover-time">{formatMessageTime(message.createdAt)}</time> : <Avatar name={message.author} index={index} />}<div className="message__content">{!compact && <div className="message__meta"><strong>{message.author}</strong><time>{formatMessageTime(message.createdAt)}</time></div>}<p>{message.body}</p></div></article></Fragment>
+            const canDelete = message.authorId === user.id || ['owner', 'admin'].includes(activeSpace.role)
+            return <Fragment key={message.id}>{showDate && <div className="message-date"><span>{formatMessageDate(message.createdAt)}</span></div>}<article className={`message ${compact ? 'message--compact' : ''}`}>{compact ? <time className="message__hover-time">{formatMessageTime(message.createdAt)}</time> : <Avatar name={message.author} index={index} />}<div className="message__content">{message.replyTo && <button className="message-reply-reference" onClick={() => document.getElementById(`message-${message.replyTo?.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })}><Reply size={11} /><strong>{message.replyTo.author}</strong><span>{message.replyTo.body}</span></button>}{!compact && <div className="message__meta"><strong>{message.author}</strong><time>{formatMessageTime(message.createdAt)}</time>{message.editedAt && <small>(editada)</small>}</div>}{editingId === message.id ? <form className="message-edit" onSubmit={(event) => saveMessageEdit(event, message.id)}><input autoFocus value={editingBody} maxLength={4000} onChange={(event) => setEditingBody(event.target.value)} /><button aria-label="Salvar edição"><Save size={14} /></button><button type="button" aria-label="Cancelar edição" onClick={() => setEditingId('')}><X size={14} /></button></form> : <p id={`message-${message.id}`}>{message.body}</p>}<div className="message-reactions">{message.reactions.map((reaction) => <button key={reaction.emoji} className={reaction.userIds.includes(user.id) ? 'selected' : ''} onClick={() => socket.emit('chat:reaction', { messageId: message.id, emoji: reaction.emoji })}>{reaction.emoji} <span>{reaction.count}</span></button>)}</div></div><div className="message-actions"><button aria-label="Responder" onClick={() => setReplyingTo(message)}><Reply size={14} /></button>{['👍', '❤️', '😂'].map((emoji) => <button key={emoji} aria-label={`Reagir ${emoji}`} onClick={() => socket.emit('chat:reaction', { messageId: message.id, emoji })}>{emoji}</button>)}{message.authorId === user.id && <button aria-label="Editar mensagem" onClick={() => { setEditingId(message.id); setEditingBody(message.body) }}><Pencil size={14} /></button>}{canDelete && <button aria-label="Excluir mensagem" onClick={() => socket.emit('chat:delete', { messageId: message.id })}><Trash2 size={14} /></button>}</div></article></Fragment>
           })}
         </div>
-        <form className="composer" onSubmit={sendMessage}><button type="button" aria-label="Adicionar"><Plus size={22} /></button><input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={`Conversar em #${channel?.name ?? ''}`} aria-label="Mensagem" disabled={!channel} /><button type="button" aria-label="Presente"><Gift size={19} /></button><button type="button" aria-label="GIF"><FileImage size={19} /></button><button type="button" aria-label="Figurinha"><Sticker size={19} /></button><button type="button" aria-label="Emoji"><Smile size={19} /></button><button type="button" aria-label="Atividades"><Sparkles size={19} /></button><button className="composer__send" type="submit" aria-label="Enviar mensagem"><Send size={18} /></button></form></>}
+        <div className="composer-wrap">{replyingTo && <div className="replying-banner"><span>Respondendo a <strong>{replyingTo.author}</strong></span><button onClick={() => setReplyingTo(null)} aria-label="Cancelar resposta"><X size={15} /></button></div>}<form className="composer" onSubmit={sendMessage}><button type="button" aria-label="Adicionar"><Plus size={22} /></button><input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={replyingTo ? `Responder a ${replyingTo.author}` : `Conversar em #${channel?.name ?? ''}`} aria-label="Mensagem" disabled={!channel} /><button type="button" aria-label="Presente"><Gift size={19} /></button><button type="button" aria-label="GIF"><FileImage size={19} /></button><button type="button" aria-label="Figurinha"><Sticker size={19} /></button><button type="button" aria-label="Emoji"><Smile size={19} /></button><button type="button" aria-label="Atividades"><Sparkles size={19} /></button><button className="composer__send" type="submit" aria-label="Enviar mensagem"><Send size={18} /></button></form></div></>}
         </>}
       </section>
 
       {callError && <div className="toast" role="alert">{callError}<button onClick={() => setCallError('')}><X size={16} /></button></div>}
-      {settingsOpen && <SettingsPanel user={user} onClose={() => setSettingsOpen(false)} onLogout={async () => { try { await fetch(`${API_URL}/auth/logout`, { method: 'POST', credentials: 'include' }) } finally { socket.disconnect(); onLogout() } }} />}
+      {settingsOpen && <SettingsPanel user={user} onUserUpdated={onUserUpdated} onClose={() => setSettingsOpen(false)} onLogout={async () => { try { await fetch(`${API_URL}/auth/logout`, { method: 'POST', credentials: 'include' }) } finally { socket.disconnect(); onLogout() } }} />}
+      {spaceManagementOpen && activeSpace && <SpaceManagement apiUrl={API_URL} space={activeSpace} currentUserId={user.id} onClose={() => setSpaceManagementOpen(false)} onChanged={async () => { await loadSpaces(activeSpace.id); socket.emit('spaces:sync') }} />}
       {accessOpen && <ActionDialog title="Membros e cargos" onClose={() => setAccessOpen(false)}><form className="channel-access-form" onSubmit={saveChannelAccess}><p>Escolha quais membros ou cargos podem acessar <strong>#{channel?.name}</strong>. Proprietários e administradores sempre mantêm acesso.</p>{submitting && !channelAccess ? <div className="access-loading">Carregando acessos…</div> : channelAccess && <><button type="button" className={`access-restriction ${accessRestricted ? 'selected' : ''}`} aria-pressed={accessRestricted} onClick={() => setAccessRestricted((value) => !value)}><Lock size={17} /><span><strong>Canal restrito</strong><small>{accessRestricted ? 'Somente as seleções abaixo podem entrar.' : 'Todos os membros da comunidade podem entrar.'}</small></span><Check size={17} /></button><div className="access-section"><strong>CARGOS</strong>{channelAccess.availableRoles.map((role) => <button type="button" key={role.id} className={accessRoles.includes(role.id) ? 'selected' : ''} aria-pressed={accessRoles.includes(role.id)} onClick={() => setAccessRoles((current) => current.includes(role.id) ? current.filter((id) => id !== role.id) : [...current, role.id])}><span className={`role-dot role-dot--${role.id}`} />{role.name}<Check size={15} /></button>)}</div><div className="access-section"><strong>MEMBROS</strong>{channelAccess.members.map((member) => <button type="button" key={member.id} className={accessMemberIds.includes(member.id) ? 'selected' : ''} aria-pressed={accessMemberIds.includes(member.id)} onClick={() => setAccessMemberIds((current) => current.includes(member.id) ? current.filter((id) => id !== member.id) : [...current, member.id])}><span className="access-avatar">{member.displayName.slice(0, 1).toUpperCase()}</span><span>{member.displayName}<small>{member.email}</small></span><Check size={15} /></button>)}</div></>}{formError && <div className="dialog-error">{formError}</div>}<button className="dialog-primary" disabled={submitting || !channelAccess}>{submitting ? 'Salvando…' : 'Salvar acessos'}</button></form></ActionDialog>}
       {dialog && <ActionDialog title={dialog === 'community' ? 'Criar comunidade' : dialog === 'channel' ? 'Criar canal' : dialog === 'invite' ? 'Convidar pessoas' : 'Entrar com convite'} onClose={() => setDialog(null)}>{dialog === 'community' ? <form onSubmit={createCommunity}><p>Você será o proprietário e poderá convidar outras pessoas depois.</p><label>Nome da comunidade<input autoFocus value={communityName} maxLength={80} onChange={(event) => setCommunityName(event.target.value)} placeholder="ex: Comunidade Voz Livre" required /></label>{formError && <div className="dialog-error">{formError}</div>}<button className="dialog-primary" disabled={submitting}>{submitting ? 'Criando…' : 'Criar comunidade'}</button></form> : dialog === 'channel' ? <form onSubmit={createChannel}><label>Nome do canal<input autoFocus value={channelName} maxLength={50} onChange={(event) => setChannelName(event.target.value)} placeholder="ex: projetos" required /></label><fieldset><legend>Tipo</legend><button type="button" className={channelKind === 'TEXT' ? 'selected' : ''} onClick={() => setChannelKind('TEXT')}><Hash size={18} />Texto</button><button type="button" className={channelKind === 'VOICE' ? 'selected' : ''} onClick={() => setChannelKind('VOICE')}><Volume2 size={18} />Voz</button></fieldset>{formError && <div className="dialog-error">{formError}</div>}<button className="dialog-primary" disabled={submitting}>{submitting ? 'Criando…' : 'Criar canal'}</button></form> : dialog === 'invite' ? <div className="invite-dialog"><p>Este espaço é privado. O link expira em 7 dias.</p>{inviteUrl ? <><label>Link de convite<input readOnly value={inviteUrl} /></label><button className="dialog-primary" onClick={() => void navigator.clipboard.writeText(inviteUrl)}><Copy size={16} /> Copiar convite</button></> : <button className="dialog-primary" disabled={submitting} onClick={() => void createInvite()}>{submitting ? 'Gerando…' : 'Gerar convite'}</button>}{formError && <div className="dialog-error">{formError}</div>}</div> : <form onSubmit={joinInvite}><p>Cole o link ou código enviado pelo administrador.</p><label>Convite<input autoFocus value={joinCode} onChange={(event) => setJoinCode(event.target.value)} placeholder="Código ou link de convite" required /></label>{formError && <div className="dialog-error">{formError}</div>}<button className="dialog-primary" disabled={submitting}>{submitting ? 'Entrando…' : 'Entrar na comunidade'}</button></form>}</ActionDialog>}
     </main>
@@ -457,20 +481,37 @@ const settingSections = [
   { id: 'appearance', label: 'Aparência', icon: Palette },
 ]
 
-function SettingsPanel({ user, onClose, onLogout }: { user: AuthUser; onClose: () => void; onLogout: () => void }) {
+function SettingsPanel({ user, onClose, onLogout, onUserUpdated }: { user: AuthUser; onClose: () => void; onLogout: () => void; onUserUpdated: (user: AuthUser) => void }) {
   const [section, setSection] = useState('account')
+  const [editingProfile, setEditingProfile] = useState(false)
+  const [changingPassword, setChangingPassword] = useState(false)
+  const [displayName, setDisplayName] = useState(user.displayName)
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [accountError, setAccountError] = useState('')
+  const [accountSuccess, setAccountSuccess] = useState('')
+  const [saving, setSaving] = useState(false)
+  const saveProfile = async (event: FormEvent) => {
+    event.preventDefault(); setSaving(true); setAccountError(''); setAccountSuccess('')
+    try { const response = await fetch(`${API_URL}/auth/profile`, { method: 'PATCH', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ displayName }) }); const payload = await response.json() as { user?: AuthUser; message?: string }; if (!response.ok || !payload.user) throw new Error(payload.message ?? 'Não foi possível atualizar o perfil.'); onUserUpdated(payload.user); setEditingProfile(false); setAccountSuccess('Perfil atualizado.') } catch (error) { setAccountError(error instanceof Error ? error.message : 'Não foi possível atualizar o perfil.') } finally { setSaving(false) }
+  }
+  const savePassword = async (event: FormEvent) => {
+    event.preventDefault(); setAccountError(''); setAccountSuccess(''); if (newPassword !== confirmPassword) { setAccountError('A confirmação da nova senha não confere.'); return } setSaving(true)
+    try { const response = await fetch(`${API_URL}/auth/password`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword, newPassword }) }); const payload = await response.json() as { message?: string }; if (!response.ok) throw new Error(payload.message ?? 'Não foi possível alterar a senha.'); setCurrentPassword(''); setNewPassword(''); setConfirmPassword(''); setChangingPassword(false); setAccountSuccess('Senha alterada com segurança.') } catch (error) { setAccountError(error instanceof Error ? error.message : 'Não foi possível alterar a senha.') } finally { setSaving(false) }
+  }
   return <div className="settings-layer">
     <aside className="settings-nav"><strong>CONFIGURAÇÕES DO USUÁRIO</strong>{settingSections.map((item) => { const Icon = item.icon; return <button key={item.id} className={section === item.id ? 'active' : ''} onClick={() => setSection(item.id)}><Icon size={17} />{item.label}</button> })}<div /><button className="logout-option" onClick={onLogout}><LogOut size={17} />Sair</button></aside>
     <section className="settings-content"><button className="settings-close" onClick={onClose}><X size={21} /><span>ESC</span></button>
-      {section === 'account' ? <><h2>Minha conta</h2><div className="account-banner"><div className="avatar account-avatar">{user.displayName[0].toUpperCase()}</div><strong>{user.displayName}</strong><button>Editar perfil</button></div><div className="account-details"><div><span>NOME DE EXIBIÇÃO</span><strong>{user.displayName}</strong><button>Editar</button></div><div><span>E-MAIL</span><strong>{user.email}</strong><button>Editar</button></div></div><h3>Senha e autenticação</h3><button className="primary-option"><KeyRound size={16} /> Alterar senha</button><div className="security-note"><Shield size={19} /><div><strong>Sessão protegida</strong><p>O login usa um cookie HttpOnly que não pode ser lido por scripts no navegador.</p></div><Check size={18} /></div></> : <><h2>{settingSections.find((item) => item.id === section)?.label}</h2><div className="settings-placeholder"><SlidersHorizontal size={28} /><h3>Controles de {settingSections.find((item) => item.id === section)?.label.toLowerCase()}</h3><p>Esta área já faz parte da navegação e receberá os controles persistentes na próxima etapa.</p><button className="primary-option">Configurar</button></div></>}
+      {section === 'account' ? <><h2>Minha conta</h2><div className="account-banner"><div className="avatar account-avatar">{user.displayName[0].toUpperCase()}</div><strong>{user.displayName}</strong><button onClick={() => setEditingProfile(true)}>Editar perfil</button></div><div className="account-details"><div><span>NOME DE EXIBIÇÃO</span><strong>{user.displayName}</strong><button onClick={() => setEditingProfile(true)}>Editar</button></div><div><span>E-MAIL</span><strong>{user.email}</strong><small>O e-mail identifica sua conta e ainda não pode ser alterado.</small></div></div>{editingProfile && <form className="account-form" onSubmit={saveProfile}><label>Nome de exibição<input autoFocus value={displayName} maxLength={50} onChange={(event) => setDisplayName(event.target.value)} /></label><div><button type="button" onClick={() => setEditingProfile(false)}>Cancelar</button><button disabled={saving}><Save size={14} /> Salvar perfil</button></div></form>}<h3>Senha e autenticação</h3>{!changingPassword ? <button className="primary-option" onClick={() => setChangingPassword(true)}><KeyRound size={16} /> Alterar senha</button> : <form className="account-form" onSubmit={savePassword}><label>Senha atual<input type="password" required value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></label><label>Nova senha<input type="password" required minLength={8} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /></label><label>Confirmar nova senha<input type="password" required minLength={8} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} /></label><div><button type="button" onClick={() => setChangingPassword(false)}>Cancelar</button><button disabled={saving}><KeyRound size={14} /> Alterar senha</button></div></form>}{accountError && <div className="dialog-error">{accountError}</div>}{accountSuccess && <div className="account-success">{accountSuccess}</div>}<div className="security-note"><Shield size={19} /><div><strong>Sessão protegida</strong><p>O login usa um cookie HttpOnly que não pode ser lido por scripts no navegador.</p></div><Check size={18} /></div></> : <><h2>{settingSections.find((item) => item.id === section)?.label}</h2><div className="settings-placeholder"><SlidersHorizontal size={28} /><h3>Controles de {settingSections.find((item) => item.id === section)?.label.toLowerCase()}</h3><p>Esta área ainda será ligada às configurações persistentes.</p></div></>}
     </section>
   </div>
 }
 
-function Avatar({ name, index }: { name: string; index: number }) { const palette = ['#4967ff', '#ff735f', '#31b98d', '#927dff']; return <div className="avatar message__avatar" style={{ background: palette[index % palette.length] }}>{name.slice(0, 1).toUpperCase()}<span /></div> }
+function Avatar({ name, index }: { name: string; index: number }) { const palette = ['#4967ff', '#ff735f', '#31b98d', '#927dff']; return <div className="avatar message__avatar" style={{ background: palette[index % palette.length] }}>{name.slice(0, 1).toUpperCase()}</div> }
 
 function messageDay(value: string) { const date = new Date(value); return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}` }
 function formatMessageDate(value: string) { return new Date(value).toLocaleDateString('pt-BR', { day: 'numeric', month: 'long', year: 'numeric' }) }
 function formatMessageTime(value: string) { return new Date(value).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) }
-function isCompactMessage(previous: Message | undefined, current: Message) { return Boolean(previous && previous.author === current.author && messageDay(previous.createdAt) === messageDay(current.createdAt) && new Date(current.createdAt).getTime() - new Date(previous.createdAt).getTime() < 5 * 60 * 1000) }
+function isCompactMessage(previous: Message | undefined, current: Message) { return Boolean(previous && !current.replyTo && previous.author === current.author && messageDay(previous.createdAt) === messageDay(current.createdAt) && new Date(current.createdAt).getTime() - new Date(previous.createdAt).getTime() < 5 * 60 * 1000) }
 export default App

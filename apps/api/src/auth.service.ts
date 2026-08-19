@@ -97,6 +97,40 @@ export class AuthService {
     }
   }
 
+  async updateProfile(userId: string, value: string) {
+    const displayName = value.trim().replace(/\s+/g, ' ');
+    if (!displayName)
+      throw new ConflictException('Informe um nome de exibição válido.');
+    const user = await this.prisma.user.update({
+      where: { id: userId },
+      data: { displayName },
+      select: this.authenticatedUserSelect,
+    });
+    return { user: this.toPublicUser(user) };
+  }
+
+  async changePassword(
+    userId: string,
+    currentPassword: string,
+    newPassword: string,
+  ) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { passwordHash: true },
+    });
+    if (!user || !(await compare(currentPassword, user.passwordHash))) {
+      throw new UnauthorizedException('A senha atual está incorreta.');
+    }
+    if (await compare(newPassword, user.passwordHash)) {
+      throw new ConflictException('A nova senha deve ser diferente da atual.');
+    }
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { passwordHash: await hash(newPassword, 12) },
+    });
+    return { ok: true };
+  }
+
   private issueToken(user: AuthUser, sessionId: string) {
     return this.jwt.signAsync({
       sub: user.id,

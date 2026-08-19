@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   Post,
+  Patch,
   Req,
   Res,
   UseGuards,
@@ -45,6 +46,25 @@ class LoginDto {
   @IsNotEmpty()
   @MaxLength(72)
   password!: string;
+}
+
+class UpdateProfileDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(50)
+  displayName!: string;
+}
+
+class ChangePasswordDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(72)
+  currentPassword!: string;
+
+  @IsString()
+  @MinLength(8)
+  @MaxLength(72)
+  newPassword!: string;
 }
 
 @Controller('auth')
@@ -91,6 +111,28 @@ export class AuthController {
     await this.auth.revokeSession(request.user.id, request.sessionId);
     response.clearCookie('vozlivre_session', { path: '/' });
     return { ok: true };
+  }
+
+  @Patch('profile')
+  @UseGuards(AuthGuard)
+  updateProfile(
+    @Req() request: AuthenticatedRequest,
+    @Body() input: UpdateProfileDto,
+  ) {
+    return this.auth.updateProfile(request.user.id, input.displayName);
+  }
+
+  @Post('password')
+  @UseGuards(AuthGuard)
+  changePassword(
+    @Req() request: AuthenticatedRequest,
+    @Body() input: ChangePasswordDto,
+  ) {
+    return this.auth.changePassword(
+      request.user.id,
+      input.currentPassword,
+      input.newPassword,
+    );
   }
 
   private setSession(response: Response, token: string) {

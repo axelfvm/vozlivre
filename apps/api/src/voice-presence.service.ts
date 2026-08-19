@@ -35,6 +35,10 @@ export class VoicePresenceService {
     return current;
   }
 
+  current(socketId: string) {
+    return this.connections.get(socketId);
+  }
+
   participants(channelId: string): VoiceParticipant[] {
     const unique = new Map<string, VoiceParticipant>();
     for (const connection of this.connections.values()) {
