@@ -16,7 +16,11 @@ const schema = Joi.object({
     .required(),
   REDIS_URL: Joi.string()
     .uri({ scheme: ['redis', 'rediss'] })
-    .optional(),
+    .when('NODE_ENV', {
+      is: 'production',
+      then: Joi.required(),
+      otherwise: Joi.optional(),
+    }),
   LIVEKIT_URL: Joi.string()
     .uri({ scheme: ['ws', 'wss', 'http', 'https'] })
     .default('ws://localhost:7880'),
@@ -31,6 +35,7 @@ export type Environment = Record<string, unknown> & {
   PORT: number;
   WEB_ORIGIN: string;
   DATABASE_URL: string;
+  REDIS_URL?: string;
   LIVEKIT_URL: string;
   LIVEKIT_API_KEY: string;
   LIVEKIT_API_SECRET: string;

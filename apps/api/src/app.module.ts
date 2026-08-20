@@ -16,14 +16,28 @@ import { SessionRegistry } from './session.registry';
 import { MediaSessionCleaner } from './media-session-cleaner';
 import { SpacesController } from './spaces.controller';
 import { SpacesService } from './spaces.service';
-import { VoicePresenceService } from './voice-presence.service';
 import { validateEnvironment } from './environment';
 import { HealthController } from './health.controller';
 import { SpaceChangeRegistry } from './space-change.registry';
+import { ChatController } from './chat.controller';
+import { MediaService } from './media.service';
+import { ChatEventRegistry } from './chat-event.registry';
+import { SocialController } from './social.controller';
+import { SocialService } from './social.service';
+import { CommunityFeaturesController } from './community-features.controller';
+import { CommunityFeaturesService } from './community-features.service';
+import { resolve } from 'node:path';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true, validate: validateEnvironment }),
+    ConfigModule.forRoot({
+      isGlobal: true,
+      envFilePath: [
+        resolve(process.cwd(), '.env'),
+        resolve(process.cwd(), '..', '..', '.env'),
+      ],
+      validate: validateEnvironment,
+    }),
     ThrottlerModule.forRoot([{ name: 'default', ttl: 60_000, limit: 120 }]),
     JwtModule.registerAsync({
       global: true,
@@ -41,6 +55,9 @@ import { SpaceChangeRegistry } from './space-change.registry';
     VoiceController,
     SpacesController,
     HealthController,
+    ChatController,
+    SocialController,
+    CommunityFeaturesController,
   ],
   providers: [
     AppService,
@@ -52,8 +69,11 @@ import { SpaceChangeRegistry } from './space-change.registry';
     SessionRegistry,
     MediaSessionCleaner,
     SpacesService,
-    VoicePresenceService,
     SpaceChangeRegistry,
+    ChatEventRegistry,
+    MediaService,
+    SocialService,
+    CommunityFeaturesService,
     { provide: APP_GUARD, useClass: ThrottlerGuard },
   ],
 })

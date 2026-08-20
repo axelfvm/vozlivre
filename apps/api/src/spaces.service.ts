@@ -4,42 +4,117 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { ChannelKind } from '@prisma/client';
+import { ChannelKind, Prisma, SpaceKind } from '@prisma/client';
 import { PrismaService } from './prisma.service';
 import { SpaceChangeRegistry } from './space-change.registry';
+import { MediaService } from './media.service';
+
+export const SPACE_PERMISSIONS = [
+  'MANAGE_CHANNELS',
+  'MANAGE_MEMBERS',
+  'MANAGE_MESSAGES',
+  'MANAGE_INVITES',
+  'SEND_MESSAGES',
+  'ATTACH_FILES',
+  'CONNECT_VOICE',
+  'SHARE_SCREEN',
+  'MODERATE_MEMBERS',
+  'VIEW_AUDIT_LOG',
+  'MENTION_EVERYONE',
+  'MANAGE_STICKERS',
+] as const;
+export type SpacePermission = (typeof SPACE_PERMISSIONS)[number];
 
 @Injectable()
 export class SpacesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly spaceChanges: SpaceChangeRegistry,
+    private readonly media: MediaService,
   ) {}
 
   async listForUser(userId: string) {
-    const memberships = await this.membershipsForUser(userId);
-    return memberships.map((membership) => ({
-      id: membership.space.id,
-      name: membership.space.name,
-      role: membership.role,
-      channels: membership.space.channels
-        .filter((channel) =>
-          this.membershipCanAccessChannel(
-            membership.role,
-            membership.assignedRoles.map((assigned) => assigned.roleId),
-            userId,
-            channel,
-          ),
-        )
-        .map((channel) => ({
-          id: channel.id,
-          spaceId: channel.spaceId,
-          name: channel.name,
-          kind: channel.kind,
-          position: channel.position,
-          isRestricted: channel.isRestricted,
-          createdAt: channel.createdAt,
-        })),
-    }));
+    return this.listForKinds(userId, [SpaceKind.COMMUNITY]);
+  }
+
+  async listPrivateForUser(userId: string) {
+    return this.listForKinds(userId, [SpaceKind.DIRECT, SpaceKind.GROUP]);
+  }
+
+  async privateSpaceForUser(userId: string, spaceId: string) {
+    const spaces = await this.listPrivateForUser(userId);
+    const space = spaces.find((item) => item.id === spaceId);
+    if (!space) throw new NotFoundException('Conversa não encontrada.');
+    return space;
+  }
+
+  private async listForKinds(userId: string, kinds: SpaceKind[]) {
+    const memberships = await this.membershipsForUser(userId, kinds);
+    return Promise.all(
+      memberships.map(async (membership) => {
+        const channels = await Promise.all(
+          membership.space.channels
+            .filter((channel) => !channel.parentChannelId)
+            .filter((channel) =>
+              this.membershipCanAccessChannel(
+                membership.role,
+                membership.assignedRoles.map((assigned) => assigned.roleId),
+                userId,
+                channel,
+              ),
+            )
+            .map(async (channel) => ({
+              id: channel.id,
+              spaceId: channel.spaceId,
+              categoryId: channel.categoryId,
+              name: channel.name,
+              topic: channel.topic,
+              kind: channel.kind,
+              position: channel.position,
+              isRestricted: channel.isRestricted,
+              unreadCount: await this.prisma.message.count({
+                where: {
+                  channelId: channel.id,
+                  authorId: { not: userId },
+                  createdAt: {
+                    gt: channel.readStates[0]?.lastReadAt ?? new Date(0),
+                  },
+                },
+              }),
+              createdAt: channel.createdAt,
+            })),
+        );
+        const directPeer =
+          membership.space.kind === SpaceKind.DIRECT
+            ? membership.space.memberships.find(
+                (item) => item.userId !== userId,
+              )?.user
+            : null;
+        return {
+          id: membership.space.id,
+          name: directPeer?.displayName ?? membership.space.name,
+          kind: membership.space.kind,
+          iconUrl: directPeer?.avatarUrl ?? membership.space.iconUrl,
+          description: membership.space.description,
+          role: membership.role,
+          permissions: ['owner', 'admin'].includes(membership.role)
+            ? [...SPACE_PERMISSIONS]
+            : [
+                ...new Set(
+                  membership.assignedRoles.flatMap(
+                    (assigned) => assigned.role.permissions,
+                  ),
+                ),
+              ],
+          channels,
+          categories: membership.space.categories,
+          members: membership.space.memberships.map((item) => ({
+            ...item.user,
+            role: item.role,
+          })),
+        };
+      }),
+    );
   }
 
   async createSpace(userId: string, input: { name: string }) {
@@ -50,6 +125,7 @@ export class SpacesService {
     const space = await this.prisma.space.create({
       data: {
         name,
+        kind: SpaceKind.COMMUNITY,
         memberships: { create: { userId, role: 'owner' } },
         channels: {
           create: [
@@ -61,6 +137,10 @@ export class SpacesService {
       include: { channels: { orderBy: { position: 'asc' } } },
     });
 
+    await this.audit(userId, space.id, 'SPACE_CREATE', 'space', space.id, {
+      name,
+    });
+
     return {
       id: space.id,
       name: space.name,
@@ -70,13 +150,30 @@ export class SpacesService {
   }
 
   async management(userId: string, spaceId: string) {
-    await this.requireManager(userId, spaceId);
+    await this.requirePermission(userId, spaceId, 'MANAGE_MEMBERS');
     const space = await this.prisma.space.findUnique({
       where: { id: spaceId },
       select: {
         id: true,
         name: true,
+        iconUrl: true,
+        description: true,
         roles: { orderBy: [{ position: 'desc' }, { name: 'asc' }] },
+        invites: {
+          where: {
+            revokedAt: null,
+            OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+          },
+          orderBy: { createdAt: 'desc' },
+          select: {
+            id: true,
+            code: true,
+            uses: true,
+            maxUses: true,
+            expiresAt: true,
+            createdAt: true,
+          },
+        },
         memberships: {
           orderBy: { user: { displayName: 'asc' } },
           select: {
@@ -92,6 +189,7 @@ export class SpacesService {
       id: space.id,
       name: space.name,
       roles: space.roles,
+      invites: space.invites,
       members: space.memberships.map((membership) => ({
         ...membership.user,
         role: membership.role,
@@ -100,14 +198,25 @@ export class SpacesService {
     };
   }
 
-  async renameSpace(userId: string, spaceId: string, value: string) {
-    await this.requireManager(userId, spaceId);
+  async renameSpace(
+    userId: string,
+    spaceId: string,
+    value: string,
+    description?: string,
+  ) {
+    await this.requirePermission(userId, spaceId, 'MANAGE_MEMBERS');
     const name = this.normalizeName(value, 80);
     if (!name) throw new ConflictException('Informe um nome válido.');
     const space = await this.prisma.space.update({
       where: { id: spaceId },
-      data: { name },
-      select: { id: true, name: true },
+      data: {
+        name,
+        description: description?.trim().slice(0, 300) ?? undefined,
+      },
+      select: { id: true, name: true, description: true, iconUrl: true },
+    });
+    await this.audit(userId, spaceId, 'SPACE_UPDATE', 'space', spaceId, {
+      name,
     });
     await this.spaceChanges.notify(spaceId);
     return space;
@@ -115,7 +224,9 @@ export class SpacesService {
 
   async deleteSpace(userId: string, spaceId: string) {
     await this.requireOwner(userId, spaceId);
+    const storedNames = await this.media.spaceUploads(spaceId);
     await this.prisma.space.delete({ where: { id: spaceId } });
+    await this.media.removeMany(storedNames);
     await this.spaceChanges.notify(spaceId);
     return { ok: true };
   }
@@ -123,9 +234,9 @@ export class SpacesService {
   async createRole(
     userId: string,
     spaceId: string,
-    input: { name: string; color: string },
+    input: { name: string; color: string; permissions?: string[] },
   ) {
-    await this.requireManager(userId, spaceId);
+    await this.requirePermission(userId, spaceId, 'MANAGE_MEMBERS');
     const name = this.normalizeName(input.name, 40);
     if (!name)
       throw new ConflictException('Informe um nome válido para o cargo.');
@@ -135,14 +246,19 @@ export class SpacesService {
       select: { position: true },
     });
     try {
-      return await this.prisma.spaceRole.create({
+      const role = await this.prisma.spaceRole.create({
         data: {
           spaceId,
           name,
           color: input.color.toLowerCase(),
+          permissions: this.validPermissions(input.permissions),
           position: (last?.position ?? 0) + 1,
         },
       });
+      await this.audit(userId, spaceId, 'ROLE_CREATE', 'role', role.id, {
+        name,
+      });
+      return role;
     } catch (error) {
       if (this.isUniqueConflict(error))
         throw new ConflictException('Já existe um cargo com esse nome.');
@@ -154,23 +270,30 @@ export class SpacesService {
     userId: string,
     spaceId: string,
     roleId: string,
-    input: { name: string; color: string },
+    input: { name: string; color: string; permissions?: string[] },
   ) {
-    await this.requireManager(userId, spaceId);
+    await this.requirePermission(userId, spaceId, 'MANAGE_MEMBERS');
     await this.requireSpaceRole(spaceId, roleId);
     const name = this.normalizeName(input.name, 40);
     if (!name)
       throw new ConflictException('Informe um nome válido para o cargo.');
     const role = await this.prisma.spaceRole.update({
       where: { id: roleId },
-      data: { name, color: input.color.toLowerCase() },
+      data: {
+        name,
+        color: input.color.toLowerCase(),
+        permissions: this.validPermissions(input.permissions),
+      },
+    });
+    await this.audit(userId, spaceId, 'ROLE_UPDATE', 'role', roleId, {
+      name,
     });
     await this.spaceChanges.notify(spaceId);
     return role;
   }
 
   async deleteRole(userId: string, spaceId: string, roleId: string) {
-    await this.requireManager(userId, spaceId);
+    await this.requirePermission(userId, spaceId, 'MANAGE_MEMBERS');
     await this.requireSpaceRole(spaceId, roleId);
     await this.prisma.$transaction([
       this.prisma.channelRoleAccess.deleteMany({
@@ -178,6 +301,7 @@ export class SpacesService {
       }),
       this.prisma.spaceRole.delete({ where: { id: roleId } }),
     ]);
+    await this.audit(userId, spaceId, 'ROLE_DELETE', 'role', roleId);
     await this.spaceChanges.notify(spaceId);
     return { ok: true };
   }
@@ -188,7 +312,7 @@ export class SpacesService {
     memberId: string,
     input: { role: string; roleIds: string[] },
   ) {
-    await this.requireManager(userId, spaceId);
+    await this.requirePermission(userId, spaceId, 'MANAGE_MEMBERS');
     const target = await this.prisma.membership.findUnique({
       where: { userId_spaceId: { userId: memberId, spaceId } },
       select: { role: true },
@@ -214,12 +338,16 @@ export class SpacesService {
         data: roleIds.map((roleId) => ({ userId: memberId, spaceId, roleId })),
       }),
     ]);
+    await this.audit(userId, spaceId, 'MEMBER_UPDATE', 'user', memberId, {
+      role: input.role,
+      roleIds,
+    });
     await this.spaceChanges.notify(spaceId);
     return { id: memberId, role: input.role, roleIds };
   }
 
   async removeMember(userId: string, spaceId: string, memberId: string) {
-    await this.requireManager(userId, spaceId);
+    await this.requirePermission(userId, spaceId, 'MANAGE_MEMBERS');
     const target = await this.prisma.membership.findUnique({
       where: { userId_spaceId: { userId: memberId, spaceId } },
       select: { role: true },
@@ -230,6 +358,7 @@ export class SpacesService {
     await this.prisma.membership.delete({
       where: { userId_spaceId: { userId: memberId, spaceId } },
     });
+    await this.audit(userId, spaceId, 'MEMBER_REMOVE', 'user', memberId);
     await this.spaceChanges.notify(spaceId);
     return { ok: true };
   }
@@ -239,32 +368,52 @@ export class SpacesService {
     spaceId: string,
     channelId: string,
     value: string,
+    topicValue?: string,
+    categoryId?: string | null,
   ) {
-    await this.requireManager(userId, spaceId);
+    await this.requirePermission(userId, spaceId, 'MANAGE_CHANNELS');
     const channel = await this.prisma.channel.findFirst({
       where: { id: channelId, spaceId },
       select: { kind: true },
     });
     if (!channel) throw new NotFoundException('Canal não encontrado.');
+    if (categoryId) {
+      const category = await this.prisma.spaceCategory.findFirst({
+        where: { id: categoryId, spaceId },
+        select: { id: true },
+      });
+      if (!category)
+        throw new ConflictException('A categoria selecionada não existe.');
+    }
     const name = this.normalizeChannelName(value, channel.kind);
     if (!name)
       throw new ConflictException('Informe um nome válido para o canal.');
     const updated = await this.prisma.channel.update({
       where: { id: channelId },
-      data: { name },
+      data: {
+        name,
+        topic: topicValue?.trim().slice(0, 1024) ?? undefined,
+        categoryId: categoryId === undefined ? undefined : categoryId,
+      },
+    });
+    await this.audit(userId, spaceId, 'CHANNEL_UPDATE', 'channel', channelId, {
+      name,
     });
     await this.spaceChanges.notify(spaceId);
     return updated;
   }
 
   async deleteChannel(userId: string, spaceId: string, channelId: string) {
-    await this.requireManager(userId, spaceId);
+    await this.requirePermission(userId, spaceId, 'MANAGE_CHANNELS');
     const channel = await this.prisma.channel.findFirst({
       where: { id: channelId, spaceId },
       select: { id: true },
     });
     if (!channel) throw new NotFoundException('Canal não encontrado.');
+    const storedNames = await this.media.channelUploads(channelId);
     await this.prisma.channel.delete({ where: { id: channelId } });
+    await this.media.removeMany(storedNames);
+    await this.audit(userId, spaceId, 'CHANNEL_DELETE', 'channel', channelId);
     await this.spaceChanges.notify(spaceId);
     return { ok: true };
   }
@@ -272,12 +421,20 @@ export class SpacesService {
   async createChannel(
     userId: string,
     spaceId: string,
-    input: { name: string; kind: ChannelKind },
+    input: { name: string; kind: ChannelKind; categoryId?: string },
   ) {
-    await this.requireManager(userId, spaceId);
+    await this.requirePermission(userId, spaceId, 'MANAGE_CHANNELS');
     const name = this.normalizeChannelName(input.name, input.kind);
     if (!name)
       throw new ConflictException('Informe um nome válido para o canal.');
+    if (input.categoryId) {
+      const category = await this.prisma.spaceCategory.findFirst({
+        where: { id: input.categoryId, spaceId },
+        select: { id: true },
+      });
+      if (!category)
+        throw new ConflictException('A categoria selecionada não existe.');
+    }
     const lastChannel = await this.prisma.channel.findFirst({
       where: { spaceId },
       orderBy: { position: 'desc' },
@@ -289,9 +446,21 @@ export class SpacesService {
           spaceId,
           name,
           kind: input.kind,
+          categoryId: input.categoryId ?? null,
           position: (lastChannel?.position ?? -1) + 1,
         },
       });
+      await this.audit(
+        userId,
+        spaceId,
+        'CHANNEL_CREATE',
+        'channel',
+        channel.id,
+        {
+          name,
+          kind: input.kind,
+        },
+      );
       await this.spaceChanges.notify(spaceId);
       return channel;
     } catch (error) {
@@ -302,21 +471,73 @@ export class SpacesService {
     }
   }
 
-  async createInvite(userId: string, spaceId: string) {
-    await this.requireManager(userId, spaceId);
-    return this.prisma.spaceInvite.create({
+  async createInvite(
+    userId: string,
+    spaceId: string,
+    input: { expiresInDays?: number; maxUses?: number } = {},
+  ) {
+    await this.requirePermission(userId, spaceId, 'MANAGE_INVITES');
+    const days = Math.max(1, Math.min(input.expiresInDays ?? 7, 30));
+    const maxUses = input.maxUses
+      ? Math.max(1, Math.min(input.maxUses, 1000))
+      : null;
+    const invite = await this.prisma.spaceInvite.create({
       data: {
         code: crypto.randomUUID().replaceAll('-', ''),
         spaceId,
         createdById: userId,
-        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        expiresAt: new Date(Date.now() + days * 24 * 60 * 60 * 1000),
+        maxUses,
       },
-      select: { code: true, expiresAt: true },
+      select: {
+        id: true,
+        code: true,
+        expiresAt: true,
+        maxUses: true,
+        uses: true,
+      },
+    });
+    await this.audit(userId, spaceId, 'INVITE_CREATE', 'invite', invite.id, {
+      maxUses,
+      expiresInDays: days,
+    });
+    return invite;
+  }
+
+  async listInvites(userId: string, spaceId: string) {
+    await this.requirePermission(userId, spaceId, 'MANAGE_INVITES');
+    return this.prisma.spaceInvite.findMany({
+      where: {
+        spaceId,
+        revokedAt: null,
+        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+      },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        code: true,
+        uses: true,
+        maxUses: true,
+        expiresAt: true,
+        createdAt: true,
+        createdBy: { select: { displayName: true } },
+      },
     });
   }
 
+  async revokeInvite(userId: string, spaceId: string, inviteId: string) {
+    await this.requirePermission(userId, spaceId, 'MANAGE_INVITES');
+    const result = await this.prisma.spaceInvite.updateMany({
+      where: { id: inviteId, spaceId },
+      data: { revokedAt: new Date() },
+    });
+    if (!result.count) throw new NotFoundException('Convite não encontrado.');
+    await this.audit(userId, spaceId, 'INVITE_REVOKE', 'invite', inviteId);
+    return { ok: true };
+  }
+
   async channelAccess(userId: string, spaceId: string, channelId: string) {
-    await this.requireManager(userId, spaceId);
+    await this.requirePermission(userId, spaceId, 'MANAGE_CHANNELS');
     const channel = await this.prisma.channel.findFirst({
       where: { id: channelId, spaceId },
       select: {
@@ -362,7 +583,7 @@ export class SpacesService {
     channelId: string,
     input: { restricted: boolean; memberIds: string[]; roles: string[] },
   ) {
-    await this.requireManager(userId, spaceId);
+    await this.requirePermission(userId, spaceId, 'MANAGE_CHANNELS');
     const channel = await this.prisma.channel.findFirst({
       where: { id: channelId, spaceId },
       select: { id: true },
@@ -402,6 +623,18 @@ export class SpacesService {
         data: roles.map((role) => ({ channelId, role })),
       }),
     ]);
+    await this.audit(
+      userId,
+      spaceId,
+      'CHANNEL_ACCESS_UPDATE',
+      'channel',
+      channelId,
+      {
+        restricted: input.restricted,
+        memberIds,
+        roles,
+      },
+    );
     await this.spaceChanges.notify(spaceId);
     return { restricted: input.restricted, memberIds, roles };
   }
@@ -411,9 +644,20 @@ export class SpacesService {
       where: { code: code.trim() },
       include: { space: true },
     });
-    if (!invite || (invite.expiresAt && invite.expiresAt <= new Date())) {
+    if (
+      !invite ||
+      invite.revokedAt ||
+      (invite.expiresAt && invite.expiresAt <= new Date()) ||
+      (invite.maxUses !== null && invite.uses >= invite.maxUses)
+    ) {
       throw new NotFoundException('Este convite não existe ou expirou.');
     }
+    const banned = await this.prisma.spaceBan.findUnique({
+      where: { spaceId_userId: { spaceId: invite.spaceId, userId } },
+      select: { userId: true },
+    });
+    if (banned)
+      throw new ForbiddenException('Você não pode entrar nesta comunidade.');
     await this.prisma.$transaction([
       this.prisma.membership.upsert({
         where: { userId_spaceId: { userId, spaceId: invite.spaceId } },
@@ -489,6 +733,118 @@ export class SpacesService {
     return !!membership && ['owner', 'admin'].includes(membership.role);
   }
 
+  async hasPermission(
+    userId: string,
+    spaceId: string,
+    permission: SpacePermission,
+  ) {
+    const membership = await this.prisma.membership.findUnique({
+      where: { userId_spaceId: { userId, spaceId } },
+      select: {
+        role: true,
+        timedOutUntil: true,
+        assignedRoles: { select: { role: { select: { permissions: true } } } },
+      },
+    });
+    if (!membership) return false;
+    if (
+      membership.timedOutUntil &&
+      membership.timedOutUntil > new Date() &&
+      [
+        'SEND_MESSAGES',
+        'ATTACH_FILES',
+        'CONNECT_VOICE',
+        'SHARE_SCREEN',
+      ].includes(permission)
+    )
+      return false;
+    if (['owner', 'admin'].includes(membership.role)) return true;
+    if (
+      [
+        'SEND_MESSAGES',
+        'ATTACH_FILES',
+        'CONNECT_VOICE',
+        'SHARE_SCREEN',
+      ].includes(permission)
+    )
+      return true;
+    return membership.assignedRoles.some((assignment) =>
+      assignment.role.permissions.includes(permission),
+    );
+  }
+
+  async members(userId: string, spaceId: string) {
+    const membership = await this.prisma.membership.findUnique({
+      where: { userId_spaceId: { userId, spaceId } },
+      select: { userId: true },
+    });
+    if (!membership)
+      throw new ForbiddenException('Você não pertence a esta comunidade.');
+    return this.prisma.membership
+      .findMany({
+        where: { spaceId },
+        orderBy: { user: { displayName: 'asc' } },
+        select: {
+          role: true,
+          user: {
+            select: {
+              id: true,
+              displayName: true,
+              avatarUrl: true,
+              status: true,
+            },
+          },
+          assignedRoles: {
+            select: { role: { select: { id: true, name: true, color: true } } },
+          },
+        },
+      })
+      .then((items) =>
+        items.map((item) => ({
+          ...item.user,
+          role: item.role,
+          roles: item.assignedRoles.map((entry) => entry.role),
+        })),
+      );
+  }
+
+  async leaveSpace(userId: string, spaceId: string) {
+    const membership = await this.prisma.membership.findUnique({
+      where: { userId_spaceId: { userId, spaceId } },
+      select: { role: true },
+    });
+    if (!membership) throw new NotFoundException('Comunidade não encontrada.');
+    if (membership.role === 'owner')
+      throw new ForbiddenException('Transfira a propriedade antes de sair.');
+    await this.prisma.membership.delete({
+      where: { userId_spaceId: { userId, spaceId } },
+    });
+    await this.spaceChanges.notify(spaceId);
+    return { ok: true };
+  }
+
+  async transferOwnership(userId: string, spaceId: string, memberId: string) {
+    await this.requireOwner(userId, spaceId);
+    const target = await this.prisma.membership.findUnique({
+      where: { userId_spaceId: { userId: memberId, spaceId } },
+    });
+    if (!target || memberId === userId)
+      throw new ConflictException('Escolha outro membro da comunidade.');
+    await this.prisma.$transaction([
+      this.prisma.membership.update({
+        where: { userId_spaceId: { userId, spaceId } },
+        data: { role: 'admin' },
+      }),
+      this.prisma.membership.update({
+        where: { userId_spaceId: { userId: memberId, spaceId } },
+        data: { role: 'owner' },
+      }),
+    ]);
+    await this.audit(userId, spaceId, 'OWNERSHIP_TRANSFER', 'user', memberId);
+    await this.spaceChanges.notify(spaceId);
+    return { ok: true };
+  }
+
   async spaceIdsForUser(userId: string) {
     const memberships = await this.prisma.membership.findMany({
       where: { userId },
@@ -498,25 +854,56 @@ export class SpacesService {
   }
 
   async channelIdsForUser(userId: string) {
-    const spaces = await this.listForUser(userId);
-    return spaces.flatMap((space) =>
-      space.channels.map((channel) => channel.id),
+    const memberships = await this.membershipsForUser(userId);
+    return memberships.flatMap((membership) =>
+      membership.space.channels
+        .filter((channel) =>
+          this.membershipCanAccessChannel(
+            membership.role,
+            membership.assignedRoles.map((assigned) => assigned.roleId),
+            userId,
+            channel,
+          ),
+        )
+        .map((channel) => channel.id),
     );
   }
 
-  private membershipsForUser(userId: string) {
+  private membershipsForUser(userId: string, kinds?: SpaceKind[]) {
     return this.prisma.membership.findMany({
-      where: { userId },
+      where: {
+        userId,
+        ...(kinds ? { space: { kind: { in: kinds } } } : {}),
+      },
       orderBy: { space: { createdAt: 'asc' } },
       include: {
-        assignedRoles: { select: { roleId: true } },
+        assignedRoles: {
+          select: { roleId: true, role: { select: { permissions: true } } },
+        },
         space: {
           include: {
+            categories: { orderBy: { position: 'asc' } },
+            memberships: {
+              orderBy: { user: { displayName: 'asc' } },
+              select: {
+                userId: true,
+                role: true,
+                user: {
+                  select: {
+                    id: true,
+                    displayName: true,
+                    avatarUrl: true,
+                    status: true,
+                  },
+                },
+              },
+            },
             channels: {
               orderBy: { position: 'asc' },
               include: {
                 memberAccess: { where: { userId }, select: { userId: true } },
                 roleAccess: { select: { role: true } },
+                readStates: { where: { userId }, select: { lastReadAt: true } },
               },
             },
             roles: true,
@@ -533,6 +920,18 @@ export class SpacesService {
     });
     if (!membership || !['owner', 'admin'].includes(membership.role)) {
       throw new ForbiddenException('Somente administradores podem fazer isso.');
+    }
+  }
+
+  private async requirePermission(
+    userId: string,
+    spaceId: string,
+    permission: SpacePermission,
+  ) {
+    if (!(await this.hasPermission(userId, spaceId, permission))) {
+      throw new ForbiddenException(
+        'Você não possui permissão para fazer isso.',
+      );
     }
   }
 
@@ -593,6 +992,13 @@ export class SpacesService {
       .replace(/^-|-$/g, '');
   }
 
+  private validPermissions(input: string[] | undefined) {
+    return [...new Set(input ?? [])].filter(
+      (permission): permission is SpacePermission =>
+        SPACE_PERMISSIONS.includes(permission as SpacePermission),
+    );
+  }
+
   private isUniqueConflict(error: unknown) {
     return (
       typeof error === 'object' &&
@@ -600,5 +1006,18 @@ export class SpacesService {
       'code' in error &&
       error.code === 'P2002'
     );
+  }
+
+  private audit(
+    actorId: string,
+    spaceId: string,
+    action: string,
+    targetType: string,
+    targetId?: string,
+    details: Prisma.InputJsonValue = {},
+  ) {
+    return this.prisma.auditLog.create({
+      data: { actorId, spaceId, action, targetType, targetId, details },
+    });
   }
 }

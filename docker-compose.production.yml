@@ -8,6 +8,8 @@ services:
     restart: unless-stopped
     expose:
       - "3000"
+    volumes:
+      - vozlivre_uploads:/app/uploads
     healthcheck:
       test:
         [
@@ -33,3 +35,6 @@ services:
     depends_on:
       api:
         condition: service_healthy
+
+volumes:
+  vozlivre_uploads:

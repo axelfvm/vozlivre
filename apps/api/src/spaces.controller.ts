@@ -16,7 +16,9 @@ import {
   IsBoolean,
   IsEnum,
   IsIn,
+  IsInt,
   IsNotEmpty,
+  IsOptional,
   IsString,
   MaxLength,
   Matches,
@@ -34,6 +36,10 @@ class CreateChannelDto {
 
   @IsEnum(ChannelKind)
   kind!: ChannelKind;
+
+  @IsOptional()
+  @IsString()
+  categoryId?: string;
 }
 
 class CreateSpaceDto {
@@ -61,6 +67,22 @@ class UpdateNameDto {
   @IsNotEmpty()
   @MaxLength(80)
   name!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  description?: string;
+}
+
+class UpdateChannelDto extends UpdateNameDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(1024)
+  topic?: string;
+
+  @IsOptional()
+  @IsString()
+  categoryId?: string | null;
 }
 
 class CreateRoleDto {
@@ -72,6 +94,21 @@ class CreateRoleDto {
   @IsString()
   @Matches(/^#[0-9a-fA-F]{6}$/)
   color!: string;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  permissions?: string[];
+}
+
+class CreateInviteDto {
+  @IsOptional()
+  @IsInt()
+  expiresInDays?: number;
+
+  @IsOptional()
+  @IsInt()
+  maxUses?: number;
 }
 
 class UpdateMemberDto {
@@ -118,7 +155,12 @@ export class SpacesController {
     @Param('spaceId') spaceId: string,
     @Body() input: UpdateNameDto,
   ) {
-    return this.spaces.renameSpace(request.user.id, spaceId, input.name);
+    return this.spaces.renameSpace(
+      request.user.id,
+      spaceId,
+      input.name,
+      input.description,
+    );
   }
 
   @Delete('spaces/:spaceId')
@@ -176,6 +218,31 @@ export class SpacesController {
     return this.spaces.removeMember(request.user.id, spaceId, memberId);
   }
 
+  @Get('spaces/:spaceId/members')
+  members(
+    @Req() request: AuthenticatedRequest,
+    @Param('spaceId') spaceId: string,
+  ) {
+    return this.spaces.members(request.user.id, spaceId);
+  }
+
+  @Post('spaces/:spaceId/leave')
+  leave(
+    @Req() request: AuthenticatedRequest,
+    @Param('spaceId') spaceId: string,
+  ) {
+    return this.spaces.leaveSpace(request.user.id, spaceId);
+  }
+
+  @Post('spaces/:spaceId/transfer/:memberId')
+  transfer(
+    @Req() request: AuthenticatedRequest,
+    @Param('spaceId') spaceId: string,
+    @Param('memberId') memberId: string,
+  ) {
+    return this.spaces.transferOwnership(request.user.id, spaceId, memberId);
+  }
+
   @Post('spaces/:spaceId/channels')
   createChannel(
     @Req() request: AuthenticatedRequest,
@@ -190,13 +257,15 @@ export class SpacesController {
     @Req() request: AuthenticatedRequest,
     @Param('spaceId') spaceId: string,
     @Param('channelId') channelId: string,
-    @Body() input: UpdateNameDto,
+    @Body() input: UpdateChannelDto,
   ) {
     return this.spaces.renameChannel(
       request.user.id,
       spaceId,
       channelId,
       input.name,
+      input.topic,
+      input.categoryId,
     );
   }
 
@@ -237,12 +306,34 @@ export class SpacesController {
   async createInvite(
     @Req() request: AuthenticatedRequest,
     @Param('spaceId') spaceId: string,
+    @Body() input: CreateInviteDto,
   ) {
-    const invite = await this.spaces.createInvite(request.user.id, spaceId);
+    const invite = await this.spaces.createInvite(
+      request.user.id,
+      spaceId,
+      input,
+    );
     return {
       ...invite,
       inviteUrl: `${parseWebOrigins(this.config.getOrThrow<string>('WEB_ORIGIN'))[0]}/?invite=${invite.code}`,
     };
+  }
+
+  @Get('spaces/:spaceId/invites')
+  listInvites(
+    @Req() request: AuthenticatedRequest,
+    @Param('spaceId') spaceId: string,
+  ) {
+    return this.spaces.listInvites(request.user.id, spaceId);
+  }
+
+  @Delete('spaces/:spaceId/invites/:inviteId')
+  revokeInvite(
+    @Req() request: AuthenticatedRequest,
+    @Param('spaceId') spaceId: string,
+    @Param('inviteId') inviteId: string,
+  ) {
+    return this.spaces.revokeInvite(request.user.id, spaceId, inviteId);
   }
 
   @Post('invites/:code/join')

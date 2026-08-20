@@ -43,15 +43,27 @@ O VozLivre é uma plataforma original de comunicação inspirada no modelo menta
 - Cadastro e login com e-mail e senha.
 - Senhas protegidas com bcrypt e sessão em cookie `HttpOnly`.
 - Apenas uma sessão ativa por conta; um novo login invalida a conexão anterior.
+- Autenticação em duas etapas TOTP com códigos de recuperação, sem provedor externo.
+- Perfil, avatar local, senha, privacidade, notificações, aparência e dispositivos persistentes.
 - Criação manual de comunidades — nenhuma comunidade falsa acompanha a conta.
 - Entrada em comunidades privadas somente por convite.
-- Criação de canais de texto e voz por proprietários ou administradores.
-- Restrição de canais por membro ou pelos cargos `owner`, `admin` e `member`.
+- Convites com expiração, limite de usos, cópia e revogação.
+- Categorias ordenáveis e criação de canais de texto, voz e threads.
+- Restrição de canais por membro e por cargos personalizados.
+- Amigos, solicitações, bloqueio, mensagens diretas e grupos privados de até 25 pessoas.
 - Mensagens armazenadas no PostgreSQL e restauradas ao abrir o canal.
-- Chat em tempo real com Socket.IO.
+- Busca de mensagens, respostas, edição, exclusão, reações, menções e mensagens fixadas.
+- Anexos persistentes de até 25 MB com preview de imagem, vídeo e áudio.
+- Figurinhas próprias por comunidade e Markdown renderizado de forma segura.
+- Contadores de mensagens não lidas e indicador de digitação em tempo real.
+- Chat em tempo real com Socket.IO e adapter Redis para múltiplas réplicas.
 - Presença de voz sincronizada apenas para membros autorizados no canal.
 - Áudio, vídeo e compartilhamento de tela com LiveKit/WebRTC.
 - Controles de microfone, ensurdecimento, câmera, tela e desconexão.
+- Preferências persistentes de dispositivos, volume, qualidade de tela, notificações e aparência.
+- Cargos personalizados com permissões efetivas para canais, membros, mensagens, convites e mídia.
+- Moderação com timeout, banimento, desbanimento e registro de auditoria.
+- Lista de membros, saída voluntária, transferência de propriedade e exclusão de comunidades e grupos.
 - Interface desktop e mobile baseada na experiência de comunidades por canais.
 
 ## Arquitetura
@@ -60,10 +72,11 @@ O VozLivre é uma plataforma original de comunicação inspirada no modelo menta
 | --- | --- | --- |
 | Interface | React 19, TypeScript e Vite | Autenticação, comunidades, chat e controles de mídia |
 | API | NestJS 11 | Regras de negócio, autenticação, autorização e tokens de mídia |
-| Realtime | Socket.IO | Mensagens, invalidação de sessão e presença de voz |
+| Realtime | Socket.IO + adapter Redis | Mensagens, invalidação de sessão e presença de voz distribuída |
 | Banco | PostgreSQL + Prisma | Usuários, sessões, espaços, convites, canais, acessos e mensagens |
+| Arquivos | Volume persistente local | Avatares, ícones, figurinhas e anexos validados e associados às entidades |
 | Mídia | LiveKit | SFU WebRTC para áudio, vídeo e compartilhamento de tela |
-| Coordenação | Redis | Dependência do LiveKit e base para escala horizontal futura |
+| Coordenação | Redis | Pub/sub do Socket.IO e coordenação entre réplicas da API |
 | Produção | Docker + Nginx | Build reproduzível, frontend estático e proxy de API/WebSocket |
 
 O tráfego do chat não passa pelo servidor de mídia. O navegador solicita ao backend um token LiveKit curto e limitado à sala autorizada; a chave secreta nunca é enviada ao cliente.
@@ -148,7 +161,7 @@ O repositório inclui imagens separadas para API e frontend, Nginx com proxy Web
 1. Copie `.env.production.example` para `.env.production`.
 2. Substitua todos os valores `CHANGE_ME`.
 3. Configure `WEB_ORIGIN` com HTTPS e LiveKit com WSS.
-4. Disponibilize PostgreSQL e uma implantação de produção do LiveKit.
+4. Disponibilize PostgreSQL, Redis e uma implantação de produção do LiveKit.
 5. Aplique as migrations:
 
    ```bash
@@ -165,9 +178,7 @@ O repositório inclui imagens separadas para API e frontend, Nginx com proxy Web
 
 O backend recusa a inicialização quando produção usa placeholders, segredos de desenvolvimento, origem sem HTTPS ou LiveKit sem WSS.
 
-### Limite atual de escala
-
-A versão atual deve usar **uma réplica da API**. As conexões Socket.IO, a invalidação imediata de sockets e a presença de voz ainda são mantidas em memória. Antes de adicionar réplicas, implemente o adapter Redis do Socket.IO e mova presença/invalidação para armazenamento compartilhado.
+O Compose de produção mantém os arquivos no volume `vozlivre_uploads`. O adapter Redis distribui eventos, invalidação de sessão e presença de voz entre réplicas da API. Réplicas no mesmo host devem montar o mesmo volume; uma implantação em vários hosts precisa trocar esse volume por armazenamento compartilhado ou object storage.
 
 Para LiveKit self-hosted, configure domínio, certificado TLS válido, TURN, Redis e as portas públicas WebRTC conforme a infraestrutura escolhida. O `docker-compose.yml` da raiz é somente para desenvolvimento local.
 
@@ -179,8 +190,22 @@ Para LiveKit self-hosted, configure domínio, certificado TLS válido, TURN, Red
 - Rate limit global e limite mais restrito para login e registro.
 - DTOs validados e propriedades desconhecidas rejeitadas.
 - Autorização de comunidade e canal verificada no backend.
+- Permissões de publicação de áudio, vídeo e tela incorporadas ao token LiveKit.
 - Tokens LiveKit de curta duração e limitados a uma única sala.
+- Uploads com allowlist de MIME, extensão derivada pelo servidor e assinatura binária validada para imagens.
+- Bloqueios sociais impedem novas mensagens nos dois sentidos.
 - Segredos e arquivos `.env` excluídos do Git.
+
+## Integrações externas não incluídas
+
+O núcleo local do VozLivre funciona sem SaaS de terceiros. Permanecem intencionalmente fora do projeto os recursos que exigem contratar ou integrar outro serviço:
+
+- recuperação de senha e confirmação de e-mail por envio transacional;
+- catálogo remoto de GIFs e geração externa de preview de links;
+- push notification fora do navegador;
+- CDN ou object storage para uma implantação distribuída em vários hosts.
+
+LiveKit, PostgreSQL e Redis possuem configuração self-hosted no projeto e não dependem de uma conta em provedor externo durante o desenvolvimento local.
 
 ## Contribuindo
 

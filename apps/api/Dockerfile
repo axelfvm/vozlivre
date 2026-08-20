@@ -24,6 +24,8 @@ RUN pnpm --filter api exec prisma generate
 
 COPY --from=build /app/apps/api/dist apps/api/dist
 
+RUN mkdir -p /app/uploads && chown node:node /app/uploads
+
 USER node
 EXPOSE 3000
 CMD ["node", "apps/api/dist/main.js"]

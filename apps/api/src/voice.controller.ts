@@ -1,6 +1,13 @@
-import { Body, Controller, Post, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  ForbiddenException,
+  Post,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { IsNotEmpty, IsString, MaxLength } from 'class-validator';
-import { AccessToken } from 'livekit-server-sdk';
+import { AccessToken, TrackSource } from 'livekit-server-sdk';
 import { ChannelKind } from '@prisma/client';
 import { ConfigService } from '@nestjs/config';
 import { AuthGuard, type AuthenticatedRequest } from './auth.guard';
@@ -31,6 +38,17 @@ export class VoiceController {
       input.channelId,
       ChannelKind.VOICE,
     );
+    if (
+      !(await this.spaces.hasPermission(
+        request.user.id,
+        channel.spaceId,
+        'CONNECT_VOICE',
+      ))
+    ) {
+      throw new ForbiddenException(
+        'Você não possui permissão para entrar neste canal.',
+      );
+    }
     const key = this.config.getOrThrow<string>('LIVEKIT_API_KEY');
     const secret = this.config.getOrThrow<string>('LIVEKIT_API_SECRET');
     const token = new AccessToken(key, secret, {
@@ -39,10 +57,23 @@ export class VoiceController {
       ttl: '15m',
     });
 
+    const canShareScreen = await this.spaces.hasPermission(
+      request.user.id,
+      channel.spaceId,
+      'SHARE_SCREEN',
+    );
+
     token.addGrant({
       roomJoin: true,
       room: `vozlivre-channel-${channel.id}`,
       canPublish: true,
+      canPublishSources: [
+        TrackSource.MICROPHONE,
+        TrackSource.CAMERA,
+        ...(canShareScreen
+          ? [TrackSource.SCREEN_SHARE, TrackSource.SCREEN_SHARE_AUDIO]
+          : []),
+      ],
       canSubscribe: true,
       canPublishData: true,
     });
@@ -50,6 +81,7 @@ export class VoiceController {
     return {
       token: await token.toJwt(),
       room: `vozlivre-channel-${channel.id}`,
+      canShareScreen,
     };
   }
 }

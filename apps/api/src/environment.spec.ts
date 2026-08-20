@@ -5,6 +5,7 @@ const productionEnvironment = {
   PORT: '3000',
   WEB_ORIGIN: 'https://vozlivre.example.com',
   DATABASE_URL: 'postgresql://user:password@database.example.com:5432/vozlivre',
+  REDIS_URL: 'rediss://redis.example.com:6379',
   LIVEKIT_URL: 'wss://livekit.example.com',
   LIVEKIT_API_KEY: 'production-key',
   LIVEKIT_API_SECRET: 'a-secure-livekit-secret-with-32-characters',
@@ -36,6 +37,12 @@ describe('validateEnvironment', () => {
         JWT_SECRET: 'CHANGE_ME_WITH_AT_LEAST_32_RANDOM_CHARACTERS',
       }),
     ).toThrow('substitua todos os valores CHANGE_ME');
+  });
+
+  it('requires Redis for distributed realtime events in production', () => {
+    expect(() =>
+      validateEnvironment({ ...productionEnvironment, REDIS_URL: undefined }),
+    ).toThrow('REDIS_URL');
   });
 
   it('rejects the development LiveKit credentials in production', () => {

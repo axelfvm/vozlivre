@@ -7,11 +7,20 @@ import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { parseWebOrigins } from './environment';
+import { join } from 'node:path';
+import { RedisIoAdapter } from './redis-io.adapter';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
   const config = app.get(ConfigService);
+  const redisUrl = config.get<string>('REDIS_URL');
+  if (redisUrl) {
+    const redisAdapter = new RedisIoAdapter(app, redisUrl);
+    await redisAdapter.connect();
+    app.useWebSocketAdapter(redisAdapter);
+  }
   const origins = parseWebOrigins(config.getOrThrow<string>('WEB_ORIGIN'));
+  app.useStaticAssets(join(process.cwd(), 'uploads'), { prefix: '/uploads/' });
   if (config.get<boolean>('TRUST_PROXY')) app.set('trust proxy', 1);
   app.use(helmet());
   app.enableCors({

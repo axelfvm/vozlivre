@@ -12,35 +12,76 @@ enum ChannelKind {
   VOICE
 }
 
+enum SpaceKind {
+  COMMUNITY
+  DIRECT
+  GROUP
+}
+
+enum FriendshipStatus {
+  PENDING
+  ACCEPTED
+}
+
+enum MentionKind {
+  USER
+  ROLE
+  EVERYONE
+}
+
 model User {
-  id               String                @id @default(cuid())
-  email            String                @unique
-  passwordHash     String
-  displayName      String
-  avatarUrl        String?
-  activeSessionId  String?
-  memberships      Membership[]
-  messages         Message[]
-  messageReactions MessageReaction[]
-  channelAccess    ChannelMemberAccess[]
-  createdInvites   SpaceInvite[]         @relation("InviteCreator")
-  createdAt        DateTime              @default(now())
+  id                  String                @id @default(cuid())
+  email               String                @unique
+  passwordHash        String
+  displayName         String
+  avatarUrl           String?
+  bio                 String                @default("") @db.VarChar(190)
+  status              String                @default("") @db.VarChar(80)
+  settings            Json                  @default("{}")
+  activeSessionId     String?
+  totpSecret          String?
+  totpEnabled         Boolean               @default(false)
+  recoveryCodeHashes  String[]              @default([])
+  memberships         Membership[]
+  messages            Message[]
+  messageReactions    MessageReaction[]
+  messageAttachments  MessageAttachment[]
+  readStates          ChannelReadState[]
+  channelAccess       ChannelMemberAccess[]
+  createdInvites      SpaceInvite[]         @relation("InviteCreator")
+  outgoingFriendships Friendship[]          @relation("FriendshipRequester")
+  incomingFriendships Friendship[]          @relation("FriendshipAddressee")
+  blockedUsers        UserBlock[]           @relation("Blocker")
+  blockedByUsers      UserBlock[]           @relation("Blocked")
+  spaceBans           SpaceBan[]
+  auditEntries        AuditLog[]            @relation("AuditActor")
+  uploadedStickers    SpaceSticker[]        @relation("StickerUploader")
+  createdAt           DateTime              @default(now())
 }
 
 model Space {
-  id          String        @id @default(cuid())
+  id          String          @id @default(cuid())
   name        String
+  kind        SpaceKind       @default(COMMUNITY)
+  iconUrl     String?
+  description String          @default("") @db.VarChar(300)
+  dmKey       String?         @unique
   memberships Membership[]
   channels    Channel[]
+  categories  SpaceCategory[]
   invites     SpaceInvite[]
   roles       SpaceRole[]
-  createdAt   DateTime      @default(now())
+  bans        SpaceBan[]
+  auditLogs   AuditLog[]
+  stickers    SpaceSticker[]
+  createdAt   DateTime        @default(now())
 }
 
 model Membership {
   userId        String
   spaceId       String
   role          String           @default("member")
+  timedOutUntil DateTime?
   user          User             @relation(fields: [userId], references: [id], onDelete: Cascade)
   space         Space            @relation(fields: [spaceId], references: [id], onDelete: Cascade)
   assignedRoles MembershipRole[]
@@ -75,17 +116,42 @@ model MembershipRole {
 }
 
 model Channel {
-  id           String                @id @default(cuid())
-  spaceId      String
-  name         String
-  kind         ChannelKind
-  position     Int                   @default(0)
-  isRestricted Boolean               @default(false)
-  space        Space                 @relation(fields: [spaceId], references: [id], onDelete: Cascade)
-  messages     Message[]
-  memberAccess ChannelMemberAccess[]
-  roleAccess   ChannelRoleAccess[]
-  createdAt    DateTime              @default(now())
+  id               String                @id @default(cuid())
+  spaceId          String
+  categoryId       String?
+  parentChannelId  String?
+  starterMessageId String?               @unique
+  archivedAt       DateTime?
+  name             String
+  topic            String                @default("") @db.VarChar(1024)
+  kind             ChannelKind
+  position         Int                   @default(0)
+  isRestricted     Boolean               @default(false)
+  space            Space                 @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  category         SpaceCategory?        @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  parentChannel    Channel?              @relation("ChannelThreads", fields: [parentChannelId], references: [id], onDelete: Cascade)
+  threads          Channel[]             @relation("ChannelThreads")
+  starterMessage   Message?              @relation("MessageThread", fields: [starterMessageId], references: [id], onDelete: SetNull)
+  messages         Message[]
+  readStates       ChannelReadState[]
+  memberAccess     ChannelMemberAccess[]
+  roleAccess       ChannelRoleAccess[]
+  createdAt        DateTime              @default(now())
+
+  @@unique([spaceId, name])
+  @@index([spaceId, position])
+  @@index([categoryId, position])
+  @@index([parentChannelId, createdAt])
+}
+
+model SpaceCategory {
+  id        String    @id @default(cuid())
+  spaceId   String
+  name      String    @db.VarChar(50)
+  position  Int       @default(0)
+  space     Space     @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  channels  Channel[]
+  createdAt DateTime  @default(now())
 
   @@unique([spaceId, name])
   @@index([spaceId, position])
@@ -115,7 +181,9 @@ model SpaceInvite {
   spaceId     String
   createdById String
   uses        Int       @default(0)
+  maxUses     Int?
   expiresAt   DateTime?
+  revokedAt   DateTime?
   createdAt   DateTime  @default(now())
   space       Space     @relation(fields: [spaceId], references: [id], onDelete: Cascade)
   createdBy   User      @relation("InviteCreator", fields: [createdById], references: [id], onDelete: Cascade)
@@ -124,21 +192,65 @@ model SpaceInvite {
 }
 
 model Message {
-  id        String            @id @default(cuid())
-  channelId String
-  authorId  String
-  replyToId String?
-  body      String            @db.VarChar(4000)
-  channel   Channel           @relation(fields: [channelId], references: [id], onDelete: Cascade)
-  author    User              @relation(fields: [authorId], references: [id], onDelete: Restrict)
-  replyTo   Message?          @relation("MessageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
-  replies   Message[]         @relation("MessageReplies")
-  reactions MessageReaction[]
-  createdAt DateTime          @default(now())
-  editedAt  DateTime?
+  id          String              @id @default(cuid())
+  channelId   String
+  authorId    String
+  replyToId   String?
+  body        String              @db.VarChar(4000)
+  pinnedAt    DateTime?
+  stickerId   String?
+  channel     Channel             @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  author      User                @relation(fields: [authorId], references: [id], onDelete: Restrict)
+  replyTo     Message?            @relation("MessageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies     Message[]           @relation("MessageReplies")
+  reactions   MessageReaction[]
+  attachments MessageAttachment[]
+  mentions    MessageMention[]
+  thread      Channel?            @relation("MessageThread")
+  sticker     SpaceSticker?       @relation(fields: [stickerId], references: [id], onDelete: SetNull)
+  createdAt   DateTime            @default(now())
+  editedAt    DateTime?
 
   @@index([channelId, createdAt])
   @@index([replyToId])
+  @@index([stickerId])
+}
+
+model MessageMention {
+  messageId String
+  kind      MentionKind
+  targetId  String      @default("")
+  message   Message     @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@id([messageId, kind, targetId])
+  @@index([kind, targetId])
+}
+
+model MessageAttachment {
+  id           String   @id @default(cuid())
+  uploaderId   String
+  messageId    String?
+  originalName String   @db.VarChar(255)
+  storedName   String   @unique
+  mimeType     String   @db.VarChar(120)
+  size         Int
+  uploader     User     @relation(fields: [uploaderId], references: [id], onDelete: Cascade)
+  message      Message? @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  createdAt    DateTime @default(now())
+
+  @@index([uploaderId, createdAt])
+  @@index([messageId])
+}
+
+model ChannelReadState {
+  userId     String
+  channelId  String
+  lastReadAt DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  channel    Channel  @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@id([userId, channelId])
+  @@index([channelId, lastReadAt])
 }
 
 model MessageReaction {
@@ -151,4 +263,75 @@ model MessageReaction {
 
   @@id([messageId, userId, emoji])
   @@index([messageId, emoji])
+}
+
+model Friendship {
+  id          String           @id @default(cuid())
+  requesterId String
+  addresseeId String
+  status      FriendshipStatus @default(PENDING)
+  requester   User             @relation("FriendshipRequester", fields: [requesterId], references: [id], onDelete: Cascade)
+  addressee   User             @relation("FriendshipAddressee", fields: [addresseeId], references: [id], onDelete: Cascade)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  @@unique([requesterId, addresseeId])
+  @@index([addresseeId, status])
+  @@index([requesterId, status])
+}
+
+model UserBlock {
+  blockerId String
+  blockedId String
+  blocker   User     @relation("Blocker", fields: [blockerId], references: [id], onDelete: Cascade)
+  blocked   User     @relation("Blocked", fields: [blockedId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@id([blockerId, blockedId])
+  @@index([blockedId])
+}
+
+model SpaceBan {
+  spaceId   String
+  userId    String
+  reason    String   @default("") @db.VarChar(300)
+  space     Space    @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@id([spaceId, userId])
+  @@index([userId])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  spaceId    String
+  actorId    String
+  action     String   @db.VarChar(60)
+  targetType String   @db.VarChar(40)
+  targetId   String?
+  details    Json     @default("{}")
+  space      Space    @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  actor      User     @relation("AuditActor", fields: [actorId], references: [id], onDelete: Restrict)
+  createdAt  DateTime @default(now())
+
+  @@index([spaceId, createdAt])
+  @@index([actorId, createdAt])
+}
+
+model SpaceSticker {
+  id         String    @id @default(cuid())
+  spaceId    String
+  uploaderId String
+  name       String    @db.VarChar(40)
+  storedName String    @unique
+  mimeType   String    @db.VarChar(120)
+  size       Int
+  space      Space     @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  uploader   User      @relation("StickerUploader", fields: [uploaderId], references: [id], onDelete: Restrict)
+  messages   Message[]
+  createdAt  DateTime  @default(now())
+
+  @@unique([spaceId, name])
+  @@index([spaceId, createdAt])
 }
