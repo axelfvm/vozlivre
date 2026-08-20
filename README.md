@@ -55,6 +55,7 @@ O VozLivre é uma plataforma original de comunicação inspirada no modelo menta
 - Busca de mensagens, respostas, edição, exclusão, reações, menções e mensagens fixadas.
 - Anexos persistentes de até 25 MB com preview de imagem, vídeo e áudio.
 - Figurinhas próprias por comunidade e Markdown renderizado de forma segura.
+- Busca, tendências e envio de GIFs pelo GIPHY, com atribuição ao provedor e ao criador.
 - Contadores de mensagens não lidas e indicador de digitação em tempo real.
 - Chat em tempo real com Socket.IO e adapter Redis para múltiplas réplicas.
 - Presença de voz sincronizada apenas para membros autorizados no canal.
@@ -76,6 +77,7 @@ O VozLivre é uma plataforma original de comunicação inspirada no modelo menta
 | Banco | PostgreSQL + Prisma | Usuários, sessões, espaços, convites, canais, acessos e mensagens |
 | Arquivos | Volume persistente local | Avatares, ícones, figurinhas e anexos validados e associados às entidades |
 | Mídia | LiveKit | SFU WebRTC para áudio, vídeo e compartilhamento de tela |
+| GIFs | GIPHY API | Busca e tendências consultadas diretamente pelo navegador; a mensagem selecionada é validada e persistida pela API |
 | Coordenação | Redis | Pub/sub do Socket.IO e coordenação entre réplicas da API |
 | Produção | Docker + Nginx | Build reproduzível, frontend estático e proxy de API/WebSocket |
 
@@ -134,12 +136,21 @@ pnpm infra:down
 | `REDIS_URL` | Conexão Redis |
 | `LIVEKIT_URL` | Endpoint LiveKit utilizado pelo backend |
 | `VITE_LIVEKIT_URL` | Endpoint público LiveKit incorporado ao frontend |
+| `VITE_GIPHY_API_KEY` | Chave pública de cliente usada pelo seletor de GIFs no navegador |
 | `LIVEKIT_API_KEY` | Chave privada do backend para emitir tokens |
 | `LIVEKIT_API_SECRET` | Segredo privado do backend para emitir tokens |
 | `JWT_SECRET` | Segredo das sessões da aplicação |
 | `TRUST_PROXY` | Habilita confiança no primeiro proxy reverso |
 
 Use `.env.example` para desenvolvimento e `.env.production.example` como checklist de produção. Variáveis `VITE_*` são incorporadas ao bundle e nunca devem conter segredos.
+
+### Configurar GIFs
+
+1. Crie uma aplicação no [painel de desenvolvedores do GIPHY](https://developers.giphy.com/dashboard/).
+2. Copie a chave da API para `VITE_GIPHY_API_KEY` no arquivo `.env`.
+3. Reinicie o frontend após alterar a variável.
+
+As consultas de busca e tendências são feitas diretamente pelo navegador, conforme a [documentação da GIPHY API](https://developers.giphy.com/docs/api/). A chave `VITE_GIPHY_API_KEY` fica visível no bundle e deve ser tratada como configuração pública de cliente, nunca como segredo. Sem essa chave, o restante do VozLivre continua funcionando e o seletor informa como concluir a configuração.
 
 ## Comandos de qualidade
 
@@ -201,7 +212,7 @@ Para LiveKit self-hosted, configure domínio, certificado TLS válido, TURN, Red
 O núcleo local do VozLivre funciona sem SaaS de terceiros. Permanecem intencionalmente fora do projeto os recursos que exigem contratar ou integrar outro serviço:
 
 - recuperação de senha e confirmação de e-mail por envio transacional;
-- catálogo remoto de GIFs e geração externa de preview de links;
+- geração externa de preview de links;
 - push notification fora do navegador;
 - CDN ou object storage para uma implantação distribuída em vários hosts.
 
@@ -220,5 +231,22 @@ Issues e pull requests são bem-vindos. Antes de enviar uma alteração:
 ## Créditos e licença
 
 VozLivre foi criado por [Axel Foley](https://github.com/axelfvm).
+
+O projeto utiliza software e serviços de terceiros, cada um preservando seus próprios autores, marcas e termos de licença:
+
+| Área | Projetos creditados |
+| --- | --- |
+| Runtime e linguagem | [Node.js](https://nodejs.org/), [TypeScript](https://www.typescriptlang.org/) e [pnpm](https://pnpm.io/) |
+| Interface | [React](https://react.dev/), [Vite](https://vite.dev/) e [Lucide](https://lucide.dev/) |
+| Backend e persistência | [NestJS](https://nestjs.com/), [Prisma](https://www.prisma.io/), [PostgreSQL](https://www.postgresql.org/) e [Redis](https://redis.io/) |
+| Tempo real e mídia | [Socket.IO](https://socket.io/) e [LiveKit](https://livekit.io/) |
+| GIFs | [GIPHY](https://giphy.com/) — conteúdo, marcas e serviço sujeitos aos [Termos da GIPHY API](https://support.giphy.com/hc/en-us/articles/360028134111-GIPHY-API-Terms-of-Service) |
+| Segurança e utilitários | [bcrypt.js](https://github.com/dcodeIO/bcrypt.js), [Helmet](https://helmetjs.github.io/), [class-validator](https://github.com/typestack/class-validator), [class-transformer](https://github.com/typestack/class-transformer), [Joi](https://joi.dev/), [Multer](https://github.com/expressjs/multer), [cookie-parser](https://github.com/expressjs/cookie-parser), [RxJS](https://rxjs.dev/) e [reflect-metadata](https://github.com/rbuckton/reflect-metadata) |
+| Infraestrutura | [Docker](https://www.docker.com/) e [Nginx](https://nginx.org/) |
+| Qualidade e testes | [Jest](https://jestjs.io/), [Supertest](https://github.com/forwardemail/supertest), [ESLint](https://eslint.org/), [Prettier](https://prettier.io/) e [Oxlint](https://oxc.rs/docs/guide/usage/linter.html) |
+
+O selo `Powered by GIPHY` distribuído pelo próprio GIPHY está em `apps/web/public/powered-by-giphy.png` e é exibido permanentemente no seletor. A autoria do GIF também é mostrada quando o provedor retorna essa informação. O uso dessas marcas não indica patrocínio ou endosso ao VozLivre.
+
+A relação completa e as versões exatas das dependências estão em `package.json`, `apps/api/package.json`, `apps/web/package.json` e `pnpm-lock.yaml`. As dependências não são relicenciadas pela licença do VozLivre; consulte a licença de cada projeto nos links oficiais e nos respectivos pacotes.
 
 O código é aberto sob a licença [BSD 3-Clause](LICENSE). Uso, modificação e redistribuição são permitidos, inclusive em projetos derivados, desde que o aviso de copyright, as condições da licença e os créditos ao autor sejam mantidos conforme o arquivo `LICENSE`.

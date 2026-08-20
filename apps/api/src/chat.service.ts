@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -34,6 +35,15 @@ export type ChatMessage = {
     name: string;
     url: string;
   } | null;
+  gif: {
+    provider: 'GIPHY';
+    externalId: string;
+    url: string;
+    title: string;
+    altText: string;
+    username: string | null;
+    pageUrl: string | null;
+  } | null;
   thread: {
     id: string;
     title: string;
@@ -51,7 +61,12 @@ type PersistedMessage = {
   createdAt: Date;
   editedAt: Date | null;
   author: { displayName: string; avatarUrl: string | null };
-  replyTo: { id: string; body: string; author: { displayName: string } } | null;
+  replyTo: {
+    id: string;
+    body: string;
+    gifTitle: string | null;
+    author: { displayName: string };
+  } | null;
   reactions: { emoji: string; userId: string }[];
   attachments: {
     id: string;
@@ -62,6 +77,13 @@ type PersistedMessage = {
   }[];
   mentions: { kind: MentionKind; targetId: string }[];
   sticker: { id: string; name: string; storedName: string } | null;
+  gifProvider: string | null;
+  gifExternalId: string | null;
+  gifUrl: string | null;
+  gifTitle: string | null;
+  gifAltText: string | null;
+  gifUsername: string | null;
+  gifPageUrl: string | null;
   thread: {
     id: string;
     topic: string;
@@ -106,6 +128,7 @@ export class ChatService {
       replyToId?: unknown;
       attachmentIds?: unknown;
       stickerId?: unknown;
+      gif?: unknown;
     },
   ): Promise<ChatMessage | null> {
     const channel = await this.spaces.accessibleChannel(
@@ -141,7 +164,8 @@ export class ChatService {
       typeof input.stickerId === 'string' && input.stickerId
         ? input.stickerId
         : undefined;
-    if (!body && !attachmentIds.length && !stickerId) return null;
+    const gif = this.parseGif(input.gif);
+    if (!body && !attachmentIds.length && !stickerId && !gif) return null;
     const replyToId =
       typeof input.replyToId === 'string' && input.replyToId
         ? input.replyToId
@@ -183,6 +207,7 @@ export class ChatService {
                 body,
                 replyToId,
                 stickerId,
+                ...gif,
                 mentions: mentions.length
                   ? { createMany: { data: mentions } }
                   : undefined,
@@ -209,6 +234,7 @@ export class ChatService {
               authorId: userId,
               body,
               replyToId,
+              ...gif,
             },
             select: this.messageSelect,
           });
@@ -273,7 +299,14 @@ export class ChatService {
     const query = queryInput.trim().slice(0, 100);
     if (query.length < 2) return [];
     const messages = await this.prisma.message.findMany({
-      where: { channelId, body: { contains: query, mode: 'insensitive' } },
+      where: {
+        channelId,
+        OR: [
+          { body: { contains: query, mode: 'insensitive' } },
+          { gifTitle: { contains: query, mode: 'insensitive' } },
+          { gifUsername: { contains: query, mode: 'insensitive' } },
+        ],
+      },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: 50,
       select: this.messageSelect,
@@ -460,7 +493,11 @@ export class ChatService {
         ? {
             id: message.replyTo.id,
             author: message.replyTo.author.displayName,
-            body: message.replyTo.body,
+            body:
+              message.replyTo.body ||
+              (message.replyTo.gifTitle
+                ? `GIF: ${message.replyTo.gifTitle}`
+                : 'Mensagem com mídia'),
           }
         : null,
       reactions: [...reactions.values()],
@@ -479,6 +516,20 @@ export class ChatService {
             url: `/uploads/${message.sticker.storedName}`,
           }
         : null,
+      gif:
+        message.gifProvider === 'GIPHY' &&
+        message.gifExternalId &&
+        message.gifUrl
+          ? {
+              provider: 'GIPHY',
+              externalId: message.gifExternalId,
+              url: message.gifUrl,
+              title: message.gifTitle || 'GIF do GIPHY',
+              altText: message.gifAltText || message.gifTitle || 'GIF do GIPHY',
+              username: message.gifUsername || null,
+              pageUrl: message.gifPageUrl || null,
+            }
+          : null,
       thread: message.thread
         ? {
             id: message.thread.id,
@@ -488,6 +539,73 @@ export class ChatService {
           }
         : null,
     };
+  }
+
+  private parseGif(input: unknown) {
+    if (input === undefined || input === null) return undefined;
+    if (typeof input !== 'object' || Array.isArray(input))
+      throw new BadRequestException('GIF inválido.');
+    const value = input as Record<string, unknown>;
+    if (value.provider !== 'GIPHY')
+      throw new BadRequestException('Provedor de GIF não permitido.');
+    const externalId =
+      typeof value.externalId === 'string' ? value.externalId.trim() : '';
+    const url = typeof value.url === 'string' ? value.url.trim() : '';
+    if (!/^[a-zA-Z0-9_-]{1,100}$/.test(externalId))
+      throw new BadRequestException('Identificador do GIF inválido.');
+    if (!this.isGiphyMediaUrl(url))
+      throw new BadRequestException('URL de mídia do GIPHY inválida.');
+    const pageUrl =
+      typeof value.pageUrl === 'string' && value.pageUrl.trim()
+        ? value.pageUrl.trim()
+        : null;
+    if (pageUrl && !this.isGiphyPageUrl(pageUrl))
+      throw new BadRequestException('Página do GIF inválida.');
+    const title =
+      typeof value.title === 'string' && value.title.trim()
+        ? value.title.trim().slice(0, 180)
+        : 'GIF do GIPHY';
+    const altText =
+      typeof value.altText === 'string' && value.altText.trim()
+        ? value.altText.trim().slice(0, 500)
+        : title;
+    const username =
+      typeof value.username === 'string' && value.username.trim()
+        ? value.username.trim().slice(0, 100)
+        : null;
+    return {
+      gifProvider: 'GIPHY',
+      gifExternalId: externalId,
+      gifUrl: url,
+      gifTitle: title,
+      gifAltText: altText,
+      gifUsername: username,
+      gifPageUrl: pageUrl,
+    };
+  }
+
+  private isGiphyMediaUrl(value: string) {
+    try {
+      const url = new URL(value);
+      return (
+        url.protocol === 'https:' &&
+        /^(?:media\d*|i)\.giphy\.com$/i.test(url.hostname)
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  private isGiphyPageUrl(value: string) {
+    try {
+      const url = new URL(value);
+      return (
+        url.protocol === 'https:' &&
+        /^(?:www\.)?giphy\.com$/i.test(url.hostname)
+      );
+    } catch {
+      return false;
+    }
   }
 
   private async parseMentions(userId: string, spaceId: string, body: string) {
@@ -566,6 +684,13 @@ export class ChatService {
     channelId: true,
     authorId: true,
     body: true,
+    gifProvider: true,
+    gifExternalId: true,
+    gifUrl: true,
+    gifTitle: true,
+    gifAltText: true,
+    gifUsername: true,
+    gifPageUrl: true,
     pinnedAt: true,
     createdAt: true,
     editedAt: true,
@@ -574,6 +699,7 @@ export class ChatService {
       select: {
         id: true,
         body: true,
+        gifTitle: true,
         author: { select: { displayName: true } },
       },
     },

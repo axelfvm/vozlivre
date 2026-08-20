@@ -100,6 +100,7 @@ describe('ChatService', () => {
           attachments: [],
           mentions: [],
           sticker: null,
+          gif: null,
           thread: null,
         },
       ],
@@ -154,6 +155,7 @@ describe('ChatService', () => {
       attachments: [],
       mentions: [],
       sticker: null,
+      gif: null,
       thread: null,
     });
     expect(messageRepository.create).toHaveBeenCalledWith(
@@ -166,6 +168,86 @@ describe('ChatService', () => {
         },
       }),
     );
+  });
+
+  it('persists a GIPHY selection using only approved media URLs', async () => {
+    const createdAt = new Date('2026-08-20T01:00:00.000Z');
+    messageRepository.create.mockResolvedValue({
+      id: 'message-gif',
+      channelId: 'channel-1',
+      authorId: 'user-1',
+      body: '',
+      pinnedAt: null,
+      createdAt,
+      editedAt: null,
+      author: { displayName: 'Axel', avatarUrl: null },
+      replyTo: null,
+      reactions: [],
+      attachments: [],
+      mentions: [],
+      sticker: null,
+      gifProvider: 'GIPHY',
+      gifExternalId: 'abc_123',
+      gifUrl: 'https://media1.giphy.com/media/abc_123/giphy.webp?cid=test',
+      gifTitle: 'Comemoração',
+      gifAltText: 'Pessoa comemorando',
+      gifUsername: 'creator',
+      gifPageUrl: 'https://giphy.com/gifs/abc_123',
+      thread: null,
+    });
+
+    await expect(
+      service.create('user-1', {
+        channelId: 'channel-1',
+        body: '',
+        gif: {
+          provider: 'GIPHY',
+          externalId: 'abc_123',
+          url: 'https://media1.giphy.com/media/abc_123/giphy.webp?cid=test',
+          title: 'Comemoração',
+          altText: 'Pessoa comemorando',
+          username: 'creator',
+          pageUrl: 'https://giphy.com/gifs/abc_123',
+        },
+      }),
+    ).resolves.toMatchObject({
+      body: '',
+      gif: {
+        provider: 'GIPHY',
+        externalId: 'abc_123',
+        title: 'Comemoração',
+        username: 'creator',
+      },
+    });
+    expect(messageRepository.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: {
+          channelId: 'channel-1',
+          authorId: 'user-1',
+          body: '',
+          replyToId: undefined,
+          gifProvider: 'GIPHY',
+          gifExternalId: 'abc_123',
+          gifUrl: 'https://media1.giphy.com/media/abc_123/giphy.webp?cid=test',
+          gifTitle: 'Comemoração',
+          gifAltText: 'Pessoa comemorando',
+          gifUsername: 'creator',
+          gifPageUrl: 'https://giphy.com/gifs/abc_123',
+        },
+      }),
+    );
+
+    await expect(
+      service.create('user-1', {
+        channelId: 'channel-1',
+        body: '',
+        gif: {
+          provider: 'GIPHY',
+          externalId: 'abc_123',
+          url: 'https://example.com/not-giphy.gif',
+        },
+      }),
+    ).rejects.toThrow('URL de mídia do GIPHY inválida.');
   });
 
   it('does not persist empty or invalid message bodies', async () => {

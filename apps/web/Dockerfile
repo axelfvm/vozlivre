@@ -9,7 +9,9 @@ RUN pnpm install --frozen-lockfile
 
 COPY apps/web apps/web
 ARG VITE_LIVEKIT_URL
+ARG VITE_GIPHY_API_KEY
 ENV VITE_LIVEKIT_URL=$VITE_LIVEKIT_URL
+ENV VITE_GIPHY_API_KEY=$VITE_GIPHY_API_KEY
 RUN pnpm --filter web build
 
 FROM nginxinc/nginx-unprivileged:1.28-alpine

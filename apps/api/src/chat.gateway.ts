@@ -254,6 +254,7 @@ export class ChatGateway
       replyToId?: string;
       attachmentIds?: string[];
       stickerId?: string;
+      gif?: unknown;
     },
   ) {
     const user = (client.data as AuthenticatedSocketData).user;

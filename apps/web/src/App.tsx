@@ -83,6 +83,7 @@ import {
 } from "./SocialHome";
 import { TwoFactorSettings } from "./TwoFactorSettings";
 import { GroupManagement } from "./GroupManagement";
+import { GifPicker, type GifSelection } from "./GifPicker";
 
 type Attachment = {
   id: string;
@@ -106,6 +107,15 @@ type Message = {
   attachments: Attachment[];
   mentions: { kind: "USER" | "ROLE" | "EVERYONE"; targetId: string }[];
   sticker: { id: string; name: string; url: string } | null;
+  gif: {
+    provider: "GIPHY";
+    externalId: string;
+    url: string;
+    title: string;
+    altText: string;
+    username: string | null;
+    pageUrl: string | null;
+  } | null;
   thread: {
     id: string;
     title: string;
@@ -394,6 +404,7 @@ function ChatApp({
   const [uploading, setUploading] = useState(false);
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [stickerOpen, setStickerOpen] = useState(false);
+  const [gifOpen, setGifOpen] = useState(false);
   const [mentionOpen, setMentionOpen] = useState(false);
   const [stickers, setStickers] = useState<
     { id: string; name: string; url: string }[]
@@ -813,12 +824,19 @@ function ChatApp({
     setEmojiOpen(false);
     setMentionOpen(false);
     setStickerOpen(false);
+    setGifOpen(false);
   };
 
   const sendSticker = (stickerId: string) => {
     if (!channel || channel.kind !== "TEXT") return;
     socket.emit("chat:send", { channelId: channel.id, body: "", stickerId });
     setStickerOpen(false);
+  };
+
+  const sendGif = (gif: GifSelection) => {
+    if (!channel || channel.kind !== "TEXT") return;
+    socket.emit("chat:send", { channelId: channel.id, body: "", gif });
+    setGifOpen(false);
   };
 
   const addMention = (item: {
@@ -1880,6 +1898,36 @@ function ChatApp({
                                 alt={message.sticker.name}
                               />
                             )}
+                            {message.gif && (
+                              <figure className="message-gif">
+                                {message.gif.pageUrl ? (
+                                  <a
+                                    href={message.gif.pageUrl}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    aria-label={`Abrir ${message.gif.title} no GIPHY`}
+                                  >
+                                    <img
+                                      src={message.gif.url}
+                                      alt={message.gif.altText}
+                                      loading="lazy"
+                                    />
+                                  </a>
+                                ) : (
+                                  <img
+                                    src={message.gif.url}
+                                    alt={message.gif.altText}
+                                    loading="lazy"
+                                  />
+                                )}
+                                <figcaption>
+                                  via GIPHY
+                                  {message.gif.username
+                                    ? ` · ${message.gif.username}`
+                                    : ""}
+                                </figcaption>
+                              </figure>
+                            )}
                             <MessageAttachments
                               attachments={message.attachments}
                             />
@@ -1983,7 +2031,7 @@ function ChatApp({
                                 <Pin size={14} />
                               </button>
                             )}
-                            {message.authorId === user.id && (
+                            {message.authorId === user.id && message.body && (
                               <button
                                 aria-label="Editar mensagem"
                                 onClick={() => {
@@ -2085,6 +2133,12 @@ function ChatApp({
                       ))}
                     </div>
                   )}
+                  {gifOpen && (
+                    <GifPicker
+                      onClose={() => setGifOpen(false)}
+                      onSelect={sendGif}
+                    />
+                  )}
                   {stickerOpen && (
                     <div className="sticker-picker">
                       {stickers.length === 0 && <span>Nenhuma figurinha nesta comunidade.</span>}
@@ -2133,9 +2187,23 @@ function ChatApp({
                         setMentionOpen((value) => !value);
                         setEmojiOpen(false);
                         setStickerOpen(false);
+                        setGifOpen(false);
                       }}
                     >
                       <AtSign size={18} />
+                    </button>
+                    <button
+                      type="button"
+                      className="composer__gif"
+                      aria-label="GIF"
+                      onClick={() => {
+                        setGifOpen((value) => !value);
+                        setEmojiOpen(false);
+                        setMentionOpen(false);
+                        setStickerOpen(false);
+                      }}
+                    >
+                      GIF
                     </button>
                     <button
                       type="button"
@@ -2144,6 +2212,7 @@ function ChatApp({
                         setStickerOpen((value) => !value);
                         setEmojiOpen(false);
                         setMentionOpen(false);
+                        setGifOpen(false);
                       }}
                     >
                       <Sticker size={18} />
@@ -2155,6 +2224,7 @@ function ChatApp({
                         setEmojiOpen((value) => !value);
                         setMentionOpen(false);
                         setStickerOpen(false);
+                        setGifOpen(false);
                       }}
                     >
                       <Smile size={19} />
